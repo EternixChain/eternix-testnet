@@ -15,6 +15,7 @@ pub struct HelloMsg {
     pub slot_started_unix_ms: u128,
     pub mode: String,
     pub validator_id: Option<String>,
+    pub validator_account: Option<String>,
 }
 
 pub struct P2p {
@@ -140,12 +141,18 @@ pub fn parse_hello(msg: &str) -> Option<HelloMsg> {
     } else {
         None
     };
+    let validator_account = if p.len() >= 7 && !p[6].is_empty() {
+        Some(p[6].to_string())
+    } else {
+        None
+    };
     Some(HelloMsg {
         addr: p[1].parse().ok()?,
         slot: p[2].parse().ok()?,
         slot_started_unix_ms: p[3].parse().ok()?,
         mode: p[4].to_string(),
         validator_id,
+        validator_account,
     })
 }
 

@@ -94,19 +94,65 @@ Start as a validator node on custom port:
 cargo run -- --mode validator --p2p-port 30333
 ```
 
+Start as a validator with an explicit owner account:
+
+```bash
+cargo run -- --mode validator --p2p-port 30333 --validator-account 0xYOUR_ADDRESS
+```
+
 Run with custom RPC port:
 
 ```bash
 cargo run -- --mode validator --p2p-port 30333 --rpc-port 8545
 ```
 
+Run with a custom genesis file:
+
+```bash
+cargo run -- --genesis ./genesis.json
+```
+
 Validator startup behavior for this prototype:
 
 - No validators are preloaded in genesis.
 - Starting a validator node auto-registers one validator ID (`val-<p2p-port>`).
+- `--validator-account` binds an account address as the owner account for that validator.
+- `buy_ticket` takes `validator_id` and burns ETX from the validator's configured owner account.
 - It is auto-provisioned with:
   - 1 ticket
   - 50,000 ETX vault (stored in quarks internally)
+
+## Genesis
+
+Startup account allocations are loaded from `genesis.json` by default.
+
+Each account entry may use either `private_key_hex` or `address`. Accounts with `private_key_hex` are available through `eth_accounts`; address-only accounts are funded but do not have a local private key.
+
+Balances are keyed by token ID. Token `"0"` is ETX.
+
+Example:
+
+```json
+{
+  "accounts": [
+    {
+      "id": "acct-1",
+      "private_key_hex": "0x...",
+      "balances": {
+        "0": "10000000000000"
+      }
+    },
+    {
+      "address": "0x1111111111111111111111111111111111111111",
+      "balances": {
+        "0": "50000000000000"
+      }
+    }
+  ]
+}
+```
+
+Use string values for large balance amounts to avoid JSON number precision limits in external tooling.
 
 Start as a standard node and connect to a peer:
 
@@ -143,6 +189,7 @@ curl -s -X POST http://127.0.0.1:8545/ -H 'content-type: application/json' -d '{
 curl -s -X POST http://127.0.0.1:8545/ -H 'content-type: application/json' -d '{"method":"create_account","params":{"account_id":"alice"}}'
 curl -s -X POST http://127.0.0.1:8545/ -H 'content-type: application/json' -d '{"method":"import_private_key","params":{"account_id":"my-eth","private_key_hex":"0xYOUR_PRIVATE_KEY"}}'
 curl -s -X POST http://127.0.0.1:8545/ -H 'content-type: application/json' -d '{"method":"etx_faucet","params":{"to":"0xYOUR_ADDRESS","amount_quarks":10000000000000}}'
+curl -s -X POST http://127.0.0.1:8545/ -H 'content-type: application/json' -d '{"method":"etx_faucet","params":{"to":"0xYOUR_ADDRESS","amount_quarks":"100000000000000000000"}}'
 curl -s -X POST http://127.0.0.1:8545/ -H 'content-type: application/json' -d '{"method":"get_account","params":{"account_id":"0x..."}}'
 curl -s -X POST http://127.0.0.1:8545/ -H 'content-type: application/json' -d '{"method":"send_tx","params":{"chain_id":1162,"from":"0x1111111111111111111111111111111111111111","nonce":1,"to":"0x2222222222222222222222222222222222222222","value":1000,"gas_limit":1000,"max_fee_per_gas":10,"data":"","tx_type":"normal_transfer"}}'
 ```

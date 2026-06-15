@@ -29,6 +29,8 @@ pub struct Config {
     pub p2p_port: u16,
     pub peers: Vec<SocketAddr>,
     pub rpc_port: u16,
+    pub validator_account: Option<String>,
+    pub genesis_path: String,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -56,6 +58,7 @@ pub enum BlockKind {
 #[derive(Clone, Debug)]
 pub struct Validator {
     pub id: String,
+    pub owner_account: Option<String>,
     pub state: ValidatorState,
     pub vault_quarks: u128,
     pub miss_counter: u32,

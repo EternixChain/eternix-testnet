@@ -85,11 +85,15 @@ fn render_validator_panel(frame: &mut Frame, app: &Protocol, area: ratatui::layo
     };
 
     let state = local.map(|v| format_validator_state(v.state)).unwrap_or("N/A");
+    let validator_account = local
+        .and_then(|v| v.owner_account.as_deref())
+        .unwrap_or("N/A");
     let vault = local.map(|v| v.vault_quarks).unwrap_or(0);
     let miss = local.map(|v| v.miss_counter).unwrap_or(0);
 
     let lines = vec![
         Line::from(format!("Role: {}", role)),
+        Line::from(format!("Validator Account: {}", validator_account)),
         Line::from(format!("State: {}", state)),
         Line::from(format!("Tickets: {}", ticket_count)),
         Line::from(format!("Ticket Share: {:.2}%", ticket_pct)),
@@ -233,6 +237,17 @@ fn render_rewards_panel(frame: &mut Frame, app: &Protocol, area: ratatui::layout
         0
     };
     let net_supply = st.base_issuance_total + st.burn_offset_total;
+    let account_supply = st
+        .accounts
+        .values()
+        .filter_map(|a| a.balances.get(&0).copied())
+        .fold(0_u128, |acc, bal| acc.saturating_add(bal));
+    let vault_supply = st
+        .validators
+        .iter()
+        .map(|v| v.vault_quarks)
+        .fold(0_u128, |acc, bal| acc.saturating_add(bal));
+    let total_supply = account_supply.saturating_add(vault_supply);
     let trend = if st.fees_burned_total > net_supply {
         "Deflationary"
     } else {
@@ -251,6 +266,7 @@ fn render_rewards_panel(frame: &mut Frame, app: &Protocol, area: ratatui::layout
             Line::from(format!("Base Issuance Total: {} q", st.base_issuance_total)),
             Line::from(format!("Burn-offset Total: {} q", st.burn_offset_total)),
             Line::from(format!("Fees Burned Total: {} q", st.fees_burned_total)),
+            Line::from(format!("Total Supply: {}", format_etx(total_supply))),
             Line::from(format!("Net Supply Change: {} q", net_supply.saturating_sub(st.fees_burned_total))),
             Line::from(format!("Trend: {}", trend)),
         ])
@@ -379,4 +395,22 @@ fn format_validator_state(state: ValidatorState) -> &'static str {
         ValidatorState::Inactive => "INACTIVE_VALIDATOR",
         ValidatorState::Jailed => "JAILED",
     }
+}
+
+fn format_etx(quarks: u128) -> String {
+    let whole = quarks / 10_000_000_000;
+    let fractional = quarks % 10_000_000_000;
+    format!("{}.{:010} ETX", format_with_commas(whole), fractional)
+}
+
+fn format_with_commas(value: u128) -> String {
+    let raw = value.to_string();
+    let mut out = String::with_capacity(raw.len() + raw.len() / 3);
+    for (i, ch) in raw.chars().enumerate() {
+        if i > 0 && (raw.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(ch);
+    }
+    out
 }

@@ -129,7 +129,7 @@ fn parse_rpc_request(v: &Value) -> Result<RpcRequest, String> {
             nonce: p.get("nonce").and_then(|x| x.as_u64()).ok_or("missing nonce")?,
             to: p.get("to").and_then(|x| x.as_str()).ok_or("missing to")?.to_string(),
             token_id: p.get("token_id").and_then(|x| x.as_u64()).unwrap_or(0),
-            value: p.get("value").and_then(|x| x.as_u64()).ok_or("missing value")? as u128,
+            value: parse_u128_field(&p, "value")?,
             gas_limit: p.get("gas_limit").and_then(|x| x.as_u64()).ok_or("missing gas_limit")?,
             max_fee_per_gas: p
                 .get("max_fee_per_gas")
@@ -158,10 +158,7 @@ fn parse_rpc_request(v: &Value) -> Result<RpcRequest, String> {
                 .and_then(|x| x.as_str())
                 .ok_or("missing validator_id")?
                 .to_string(),
-            amount_quarks: p
-                .get("amount_quarks")
-                .and_then(|x| x.as_u64())
-                .ok_or("missing amount_quarks")? as u128,
+            amount_quarks: parse_u128_field(&p, "amount_quarks")?,
         }),
         "vault_to_wallet" => Ok(RpcRequest::VaultToWallet {
             validator_id: p
@@ -169,10 +166,7 @@ fn parse_rpc_request(v: &Value) -> Result<RpcRequest, String> {
                 .and_then(|x| x.as_str())
                 .ok_or("missing validator_id")?
                 .to_string(),
-            amount_quarks: p
-                .get("amount_quarks")
-                .and_then(|x| x.as_u64())
-                .ok_or("missing amount_quarks")? as u128,
+            amount_quarks: parse_u128_field(&p, "amount_quarks")?,
         }),
         "get_account" => Ok(RpcRequest::GetAccount {
             account_id: p
@@ -199,8 +193,32 @@ fn parse_rpc_request(v: &Value) -> Result<RpcRequest, String> {
                 .and_then(|x| x.as_str())
                 .ok_or("missing to")?
                 .to_string(),
-            amount_quarks: p.get("amount_quarks").and_then(|x| x.as_u64()).map(|x| x as u128),
+            amount_quarks: parse_optional_u128_field(&p, "amount_quarks")?,
         }),
         _ => Err("unknown method".to_string()),
     }
+}
+
+fn parse_u128_field(params: &Value, field: &str) -> Result<u128, String> {
+    let value = params.get(field).ok_or_else(|| format!("missing {}", field))?;
+    parse_u128_value(value, field)
+}
+
+fn parse_optional_u128_field(params: &Value, field: &str) -> Result<Option<u128>, String> {
+    params
+        .get(field)
+        .map(|value| parse_u128_value(value, field))
+        .transpose()
+}
+
+fn parse_u128_value(value: &Value, field: &str) -> Result<u128, String> {
+    if let Some(n) = value.as_u64() {
+        return Ok(n as u128);
+    }
+    if let Some(s) = value.as_str() {
+        return s
+            .parse::<u128>()
+            .map_err(|_| format!("invalid {}, expected unsigned integer", field));
+    }
+    Err(format!("invalid {}, expected unsigned integer", field))
 }

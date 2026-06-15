@@ -9,6 +9,8 @@ pub fn parse_args() -> Result<Config> {
     let mut p2p_port = 30333_u16;
     let mut rpc_port = 8545_u16;
     let mut peers: Vec<SocketAddr> = vec![];
+    let mut validator_account: Option<String> = None;
+    let mut genesis_path = "genesis.json".to_string();
 
     let args: Vec<String> = std::env::args().collect();
     let mut i = 1;
@@ -50,6 +52,20 @@ pub fn parse_args() -> Result<Config> {
                 }
                 rpc_port = args[i].parse()?;
             }
+            "--validator-account" => {
+                i += 1;
+                if i >= args.len() {
+                    anyhow::bail!("--validator-account requires an address");
+                }
+                validator_account = Some(args[i].clone());
+            }
+            "--genesis" => {
+                i += 1;
+                if i >= args.len() {
+                    anyhow::bail!("--genesis requires a path");
+                }
+                genesis_path = args[i].clone();
+            }
             _ => {}
         }
         i += 1;
@@ -60,5 +76,7 @@ pub fn parse_args() -> Result<Config> {
         p2p_port,
         peers,
         rpc_port,
+        validator_account,
+        genesis_path,
     })
 }

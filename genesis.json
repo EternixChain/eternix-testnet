@@ -1,0 +1,44 @@
+{
+  "accounts": [
+    {
+      "id": "acct-1",
+      "private_key_hex": "0x59c6995e998f97a5a0044966f0945382d3f8f9a89c8f6d9f2baf6a6c57b8b12a",
+      "balances": { "0": "125000000000000000" }
+    },
+    {
+      "id": "acct-2",
+      "private_key_hex": "0x8b3a350cf5c34c9194ca3a545d2f8f14de6f7e2a7bc01db57a97dc0b1819b735",
+      "balances": { "0": "125000000000000000" }
+    },
+    {
+      "id": "acct-3",
+      "private_key_hex": "0x3c44cdddb6a900fa2b585dd299e03d12fa4293bc5f2f8f0f85b8e7d8f5f6e9aa",
+      "balances": { "0": "125000000000000000" }
+    },
+    {
+      "id": "acct-4",
+      "private_key_hex": "0x90f79bf6eb2c4f870365e785982e1f101e93b9069d6d8f5d0e7c3b2a1f4e5d6c",
+      "balances": { "0": "125000000000000000" }
+    },
+    {
+      "id": "acct-5",
+      "private_key_hex": "0x15d34aaf54267db7d7c367839aaf71a00a2c6a65d4f5a6b7c8d9e0f1a2b3c4d5",
+      "balances": { "0": "125000000000000000" }
+    },
+    {
+      "id": "acct-6",
+      "private_key_hex": "0x9965507d1a55bcc2695c58ba16fb37d819b0a4dcf6a4e2d1c8b7a6f5e4d3c2b1",
+      "balances": { "0": "125000000000000000" }
+    },
+    {
+      "id": "acct-7",
+      "private_key_hex": "0x976ea74026e726554db657fa54763abd0c3a0aa9b0a1b2c3d4e5f60718293a4b",
+      "balances": { "0": "125000000000000000" }
+    },
+    {
+      "id": "acct-8",
+      "private_key_hex": "0x14dc79964da2c08b23698b3d3cc7ca32193d9955f7f6e5d4c3b2a1908f7e6d5c",
+      "balances": { "0": "125000000000000000" }
+    }
+  ]
+}
