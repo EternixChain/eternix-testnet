@@ -98,7 +98,7 @@ fn render_validator_panel(frame: &mut Frame, app: &Protocol, area: ratatui::layo
         Line::from(format!("Tickets: {}", ticket_count)),
         Line::from(format!("Ticket Share: {:.2}%", ticket_pct)),
         Line::from(format!("Retiring: {}", retiring_count)),
-        Line::from(format!("Vault: {} q", vault)),
+        Line::from(format!("Vault: {}", format_etx(vault))),
         Line::from(format!("Miss Counter: {}", miss)),
         Line::from(format!("Next Chance: {:.2}%", ticket_pct)),
     ];
@@ -232,22 +232,14 @@ fn render_rewards_panel(frame: &mut Frame, app: &Protocol, area: ratatui::layout
             .iter()
             .filter(|p| p.as_ref().is_some_and(|x| x == id))
             .count() as u128;
-        est_offset_per_block * produced_by_local
+        app.base_reward_per_block_quarks()
+            .saturating_add(est_offset_per_block)
+            .saturating_mul(produced_by_local)
     } else {
         0
     };
     let net_supply = st.base_issuance_total + st.burn_offset_total;
-    let account_supply = st
-        .accounts
-        .values()
-        .filter_map(|a| a.balances.get(&0).copied())
-        .fold(0_u128, |acc, bal| acc.saturating_add(bal));
-    let vault_supply = st
-        .validators
-        .iter()
-        .map(|v| v.vault_quarks)
-        .fold(0_u128, |acc, bal| acc.saturating_add(bal));
-    let total_supply = account_supply.saturating_add(vault_supply);
+    let total_supply = app.total_supply_quarks();
     let trend = if st.fees_burned_total > net_supply {
         "Deflationary"
     } else {
@@ -256,18 +248,18 @@ fn render_rewards_panel(frame: &mut Frame, app: &Protocol, area: ratatui::layout
 
     frame.render_widget(
         Paragraph::new(vec![
-            Line::from(format!("Inflation: {:.2}%", st.annual_inflation_ppm as f64 / 10000.0)),
-            Line::from("Base Reward/Block: 30000000 q"),
+            Line::from(format!("Inflation: {:.2}%", st.annual_inflation_ppb as f64 / 10_000_000.0)),
+            Line::from(format!("Base Reward/Block: {}", format_etx(app.base_reward_per_block_quarks()))),
             Line::from(format!("Burn-offset k: {:.3}", st.burn_offset_k_permille as f64 / 1000.0)),
             Line::from(format!("Sub-epoch: {}/{}", sub_slot, SUB_EPOCH_SLOTS)),
-            Line::from(format!("Burn Accumulated: {} q", st.burn_this_sub_epoch)),
-            Line::from(format!("Est Offset/Block (Projected): {} q", est_offset_per_block)),
-            Line::from(format!("Est Validator Reward: {} q", local_est_reward)),
-            Line::from(format!("Base Issuance Total: {} q", st.base_issuance_total)),
-            Line::from(format!("Burn-offset Total: {} q", st.burn_offset_total)),
-            Line::from(format!("Fees Burned Total: {} q", st.fees_burned_total)),
+            Line::from(format!("Burn Accumulated: {}", format_etx(st.burn_this_sub_epoch))),
+            Line::from(format!("Est Offset/Block: {}", format_etx(est_offset_per_block))),
+            Line::from(format!("Est Validator Reward: {}", format_etx(local_est_reward))),
+            Line::from(format!("Base Issuance Total: {}", format_etx(st.base_issuance_total))),
+            Line::from(format!("Burn-offset Total: {}", format_etx(st.burn_offset_total))),
+            Line::from(format!("Fees Burned Total: {}", format_etx(st.fees_burned_total))),
             Line::from(format!("Total Supply: {}", format_etx(total_supply))),
-            Line::from(format!("Net Supply Change: {} q", net_supply.saturating_sub(st.fees_burned_total))),
+            Line::from(format!("Net Supply Change: {}", format_etx(net_supply.saturating_sub(st.fees_burned_total)))),
             Line::from(format!("Trend: {}", trend)),
         ])
         .block(Block::default().title("Rewards / Economy").borders(Borders::ALL))
@@ -320,7 +312,7 @@ fn render_mempool_panel(frame: &mut Frame, app: &Protocol, area: ratatui::layout
             Line::from(format!("System: {}", system)),
             Line::from(format!("Last Block Tx: {}", last_tx)),
             Line::from(format!("Last Block Gas: {}", last_gas)),
-            Line::from(format!("Last Block Fees Burned: {} q", last_fees)),
+            Line::from(format!("Last Block Fees Burned: {}", format_etx(last_fees as u128))),
         ])
         .block(Block::default().title("Mempool").borders(Borders::ALL))
         .wrap(Wrap { trim: true }),

@@ -17,7 +17,7 @@ impl Protocol {
                 id: id.clone(),
                 owner_account: local_validator_account.clone(),
                 state: ValidatorState::Active,
-                vault_quarks: 5_000_000_000_000_000,
+                vault_quarks: INITIAL_VALIDATOR_VAULT_QUARKS,
                 miss_counter: 0,
                 double_sign_offenses: 0,
                 blocks_this_sub_epoch: 0,
@@ -52,7 +52,8 @@ impl Protocol {
                 fees_burned_total: 0,
                 base_issuance_total: 0,
                 burn_offset_total: 0,
-                annual_inflation_ppm: 60_000,
+                annual_inflation_ppb: 60_000_000,
+                base_reward_per_block_quarks: 0,
                 burn_offset_k_permille: 500,
                 epoch_validator_blocks: 0,
                 epoch_total_slots: 0,
@@ -92,6 +93,7 @@ impl Protocol {
         this.state.current_leader = this.select_leader();
         this.state.exec_status = ExecStatus::Executing;
         this.bootstrap_accounts(&cfg.genesis_path);
+        this.recompute_base_reward_per_block();
         this.state.events.push_front(format!("node started on p2p port {}", cfg.p2p_port));
         Ok(this)
     }
@@ -300,13 +302,7 @@ impl Protocol {
                 count,
             } => {
                 let cost = TICKET_COST_QUARKS.saturating_mul(count as u128);
-                let Some(owner_account) = self
-                    .state
-                    .validators
-                    .iter()
-                    .find(|v| v.id == validator_id)
-                    .and_then(|v| v.owner_account.clone())
-                else {
+                let Some(owner_account) = self.validator_owner_account(&validator_id) else {
                     return json!({"ok": false, "error": "validator account not configured"});
                 };
                 if !self.debit_balance(&owner_account, TOKEN_ETX_ID, cost) {
@@ -319,14 +315,17 @@ impl Protocol {
                 validator_id,
                 amount_quarks,
             } => {
-                if !self.debit_balance(&validator_id, TOKEN_ETX_ID, amount_quarks) {
-                    return json!({"ok": false, "error": "insufficient wallet balance"});
+                let Some(owner_account) = self.validator_owner_account(&validator_id) else {
+                    return json!({"ok": false, "error": "validator account not configured"});
+                };
+                if !self.debit_balance(&owner_account, TOKEN_ETX_ID, amount_quarks) {
+                    return json!({"ok": false, "error": "insufficient validator account balance"});
                 }
                 if let Some(v) = self.state.validators.iter_mut().find(|v| v.id == validator_id) {
-                    v.vault_quarks += amount_quarks;
-                    json!({"ok": true, "vault_quarks": v.vault_quarks})
+                    v.vault_quarks = v.vault_quarks.saturating_add(amount_quarks);
+                    json!({"ok": true, "validator_id": validator_id, "from": owner_account, "vault_quarks": v.vault_quarks})
                 } else {
-                    self.credit_balance(&validator_id, TOKEN_ETX_ID, amount_quarks);
+                    self.credit_balance(&owner_account, TOKEN_ETX_ID, amount_quarks);
                     json!({"ok": false, "error": "validator not found"})
                 }
             }
@@ -334,6 +333,9 @@ impl Protocol {
                 validator_id,
                 amount_quarks,
             } => {
+                let Some(owner_account) = self.validator_owner_account(&validator_id) else {
+                    return json!({"ok": false, "error": "validator account not configured"});
+                };
                 if let Some(v) = self.state.validators.iter_mut().find(|v| v.id == validator_id) {
                     if v.vault_quarks < amount_quarks {
                         return json!({"ok": false, "error": "insufficient vault balance"});
@@ -341,8 +343,8 @@ impl Protocol {
                     v.vault_quarks -= amount_quarks;
                     let new_vault = v.vault_quarks;
                     let _ = v;
-                    self.credit_balance(&validator_id, TOKEN_ETX_ID, amount_quarks);
-                    json!({"ok": true, "vault_quarks": new_vault})
+                    self.credit_balance(&owner_account, TOKEN_ETX_ID, amount_quarks);
+                    json!({"ok": true, "validator_id": validator_id, "to": owner_account, "vault_quarks": new_vault})
                 } else {
                     json!({"ok": false, "error": "validator not found"})
                 }

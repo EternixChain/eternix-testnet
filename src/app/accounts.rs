@@ -1,6 +1,35 @@
 use super::*;
 
 impl Protocol {
+    pub fn total_supply_quarks(&self) -> u128 {
+        let account_supply = self
+            .state
+            .accounts
+            .values()
+            .filter_map(|a| a.balances.get(&TOKEN_ETX_ID).copied())
+            .fold(0_u128, |acc, bal| acc.saturating_add(bal));
+        let vault_supply = self
+            .state
+            .validators
+            .iter()
+            .map(|v| v.vault_quarks)
+            .fold(0_u128, |acc, bal| acc.saturating_add(bal));
+
+        account_supply.saturating_add(vault_supply)
+    }
+
+    pub fn base_reward_per_block_quarks(&self) -> u128 {
+        self.state.base_reward_per_block_quarks
+    }
+
+    pub(super) fn recompute_base_reward_per_block(&mut self) {
+        self.state.base_reward_per_block_quarks = self
+            .total_supply_quarks()
+            .saturating_mul(self.state.annual_inflation_ppb as u128)
+            / INFLATION_RATE_DENOMINATOR
+            / SLOTS_PER_YEAR;
+    }
+
     pub(super) fn bootstrap_accounts(&mut self, genesis_path: &str) {
         let raw = match std::fs::read_to_string(genesis_path) {
             Ok(raw) => raw,
@@ -102,6 +131,14 @@ impl Protocol {
         }
         *bal -= amount;
         true
+    }
+
+    pub(super) fn validator_owner_account(&self, validator_id: &str) -> Option<String> {
+        self.state
+            .validators
+            .iter()
+            .find(|v| v.id == validator_id)
+            .and_then(|v| v.owner_account.clone())
     }
 
     pub(super) fn burn_and_mint_tickets(&mut self, validator_id: &str, count: u64) {

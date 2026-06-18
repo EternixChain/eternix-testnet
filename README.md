@@ -118,6 +118,7 @@ Validator startup behavior for this prototype:
 - Starting a validator node auto-registers one validator ID (`val-<p2p-port>`).
 - `--validator-account` binds an account address as the owner account for that validator.
 - `buy_ticket` takes `validator_id` and burns ETX from the validator's configured owner account.
+- `wallet_to_vault` and `vault_to_wallet` take `validator_id` and move ETX between the validator's configured owner account and vault.
 - It is auto-provisioned with:
   - 1 ticket
   - 50,000 ETX vault (stored in quarks internally)

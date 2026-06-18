@@ -93,14 +93,15 @@ impl Protocol {
         }
         self.state.fees_burned_total += fees as u128;
         self.state.burn_this_sub_epoch += fees as u128;
+        let base_reward = self.base_reward_per_block_quarks();
         if let Some(v) = self.state.validators.iter_mut().find(|v| v.id == self.state.current_leader) {
             v.blocks_this_sub_epoch += 1;
             if v.miss_counter > 0 {
                 v.miss_counter -= 1;
             }
-            v.vault_quarks += 30_000_000;
+            v.vault_quarks = v.vault_quarks.saturating_add(base_reward);
+            self.state.base_issuance_total = self.state.base_issuance_total.saturating_add(base_reward);
         }
-        self.state.base_issuance_total += 30_000_000;
 
         if let Some(hash) = self.state.raw_tx_pending.pop_front()
             && let Some(rec) = self.state.raw_txs.get_mut(&hash)
@@ -169,8 +170,12 @@ impl Protocol {
                 .push_front(format!("sub-epoch transition {}", self.state.sub_epoch_index));
         }
         if self.state.slot > 0 && self.state.slot.is_multiple_of(SUB_EPOCH_SLOTS * EPOCH_SUB_EPOCHS) {
-            self.state.epoch_index += 1;
-            self.state.annual_inflation_ppm = (self.state.annual_inflation_ppm * 9 / 10).max(5_000);
+            let next_epoch = self.state.epoch_index + 1;
+            if next_epoch.is_multiple_of(EPOCHS_PER_YEAR) {
+                self.state.annual_inflation_ppb = (self.state.annual_inflation_ppb * 9 / 10).max(5_000_000);
+                self.recompute_base_reward_per_block();
+            }
+            self.state.epoch_index = next_epoch;
             self.finalize_retire_for_epoch(self.state.epoch_index);
             self.rotate_epoch_seed();
             self.process_epoch_validator_transitions();

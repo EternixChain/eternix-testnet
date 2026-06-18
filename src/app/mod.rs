@@ -20,6 +20,10 @@ use crate::rpc::RpcRequest;
 const GENESIS_EPOCH_SEED: [u8; 32] = [0x45; 32];
 const TOKEN_ETX_ID: u64 = 0;
 const TICKET_COST_QUARKS: u128 = 10_000_000_000_000;
+const INITIAL_VALIDATOR_VAULT_QUARKS: u128 = 500_000_000_000_000;
+const INFLATION_RATE_DENOMINATOR: u128 = 1_000_000_000;
+const EPOCHS_PER_YEAR: u64 = 365;
+const SLOTS_PER_YEAR: u128 = 365 * 24 * 60 * 60 / (SLOT_MS as u128 / 1000);
 const WEI_PER_QUARK: u64 = 100_000_000;
 
 pub struct Protocol {

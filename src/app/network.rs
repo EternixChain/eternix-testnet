@@ -131,7 +131,7 @@ impl Protocol {
             id: id.to_string(),
             owner_account,
             state: ValidatorState::Active,
-            vault_quarks: 5_000_000_000_000_000,
+            vault_quarks: INITIAL_VALIDATOR_VAULT_QUARKS,
             miss_counter: 0,
             double_sign_offenses: 0,
             blocks_this_sub_epoch: 0,
