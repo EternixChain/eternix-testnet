@@ -489,3 +489,18 @@ pub(super) fn max_fee_per_gas_to_quarks(max_fee_per_gas: u64) -> u64 {
 pub(super) fn wei_to_quarks(value_wei: u128) -> u128 {
     value_wei / WEI_PER_QUARK as u128
 }
+
+pub(super) fn encode_register_validator_data(validator_pubkey: &str, reward_address: &str) -> String {
+    json!({
+        "validator_pubkey": validator_pubkey,
+        "reward_address": reward_address,
+    })
+    .to_string()
+}
+
+pub(super) fn decode_register_validator_data(data: &str) -> Option<(String, String)> {
+    let value: Value = serde_json::from_str(data).ok()?;
+    let validator_pubkey = value.get("validator_pubkey")?.as_str()?.to_string();
+    let reward_address = value.get("reward_address")?.as_str()?.to_string();
+    Some((validator_pubkey, reward_address))
+}

@@ -69,21 +69,139 @@ impl Protocol {
                 break;
             }
             let tx = tx.clone();
-            if !self.can_pay_value(&tx.from, tx.token_id, tx.value) {
-                self.state.mempool.pop_front();
+            let fee = tx.fee_quarks as u128;
+            let executed = match tx.kind {
+                "registerValidator" => {
+                    let Some((validator_pubkey, reward_address)) = decode_register_validator_data(&tx.data) else {
+                        self.state.mempool.pop_front();
+                        continue;
+                    };
+                    let Some(validator_pubkey) = self.normalize_validator_pubkey(&validator_pubkey) else {
+                        self.state.mempool.pop_front();
+                        continue;
+                    };
+                    if self.state.validators.iter().any(|v| v.id == tx.to)
+                        || self.validator_pubkey_registered(&validator_pubkey)
+                        || !self.can_pay_fee(&tx.from, TOKEN_ETX_ID, fee)
+                    {
+                        self.state.mempool.pop_front();
+                        continue;
+                    }
+                    self.state.mempool.pop_front();
+                    if !self.debit_balance(&tx.from, TOKEN_ETX_ID, fee) {
+                        false
+                    } else {
+                        self.register_validator_record(
+                            tx.to.clone(),
+                            &tx.from,
+                            validator_pubkey,
+                            reward_address,
+                        );
+                        true
+                    }
+                }
+                "buyTicket" => {
+                    let Some(count) = u64::try_from(tx.value).ok().filter(|count| *count > 0) else {
+                        self.state.mempool.pop_front();
+                        continue;
+                    };
+                    let cost = TICKET_COST_QUARKS.saturating_mul(tx.value);
+                    let required = cost.saturating_add(fee);
+                    if self.validator_owner_account(&tx.to).as_deref() != Some(tx.from.as_str())
+                        || !self.can_pay_fee(&tx.from, TOKEN_ETX_ID, required)
+                    {
+                        self.state.mempool.pop_front();
+                        continue;
+                    }
+                    self.state.mempool.pop_front();
+                    if !self.debit_balance(&tx.from, TOKEN_ETX_ID, cost) {
+                        false
+                    } else if !self.debit_balance(&tx.from, TOKEN_ETX_ID, fee) {
+                        self.credit_balance(&tx.from, TOKEN_ETX_ID, cost);
+                        false
+                    } else {
+                        self.burn_and_mint_tickets(&tx.to, count);
+                        self.refresh_validator_activation(&tx.to);
+                        true
+                    }
+                }
+                "walletToVault" => {
+                    let required = tx.value.saturating_add(fee);
+                    if self.validator_owner_account(&tx.to).as_deref() != Some(tx.from.as_str())
+                        || !self.can_pay_fee(&tx.from, TOKEN_ETX_ID, required)
+                        || !self.state.validators.iter().any(|v| v.id == tx.to)
+                    {
+                        self.state.mempool.pop_front();
+                        continue;
+                    }
+                    self.state.mempool.pop_front();
+                    if !self.debit_balance(&tx.from, TOKEN_ETX_ID, tx.value) {
+                        false
+                    } else if !self.debit_balance(&tx.from, TOKEN_ETX_ID, fee) {
+                        self.credit_balance(&tx.from, TOKEN_ETX_ID, tx.value);
+                        false
+                    } else if let Some(v) = self.state.validators.iter_mut().find(|v| v.id == tx.to) {
+                        v.vault_quarks = v.vault_quarks.saturating_add(tx.value);
+                        self.refresh_validator_activation(&tx.to);
+                        true
+                    } else {
+                        self.credit_balance(&tx.from, TOKEN_ETX_ID, tx.value);
+                        false
+                    }
+                }
+                "vaultToWallet" => {
+                    if self.validator_owner_account(&tx.to).as_deref() != Some(tx.from.as_str())
+                        || !self.can_pay_fee(&tx.from, TOKEN_ETX_ID, fee)
+                        || !self
+                            .state
+                            .validators
+                            .iter()
+                            .find(|v| v.id == tx.to)
+                            .is_some_and(|v| v.vault_quarks >= tx.value)
+                    {
+                        self.state.mempool.pop_front();
+                        continue;
+                    }
+                    self.state.mempool.pop_front();
+                    if !self.debit_balance(&tx.from, TOKEN_ETX_ID, fee) {
+                        false
+                    } else if let Some(v) = self.state.validators.iter_mut().find(|v| v.id == tx.to) {
+                        v.vault_quarks -= tx.value;
+                        self.credit_balance(&tx.from, TOKEN_ETX_ID, tx.value);
+                        true
+                    } else {
+                        false
+                    }
+                }
+                _ => {
+                    let can_pay = if tx.token_id == tx.fee_token_id {
+                        self.can_pay_fee(&tx.from, tx.token_id, tx.value.saturating_add(fee))
+                    } else {
+                        self.can_pay_value(&tx.from, tx.token_id, tx.value)
+                            && self.can_pay_fee(&tx.from, tx.fee_token_id, fee)
+                    };
+                    if !can_pay {
+                        self.state.mempool.pop_front();
+                        continue;
+                    }
+                    self.state.mempool.pop_front();
+                    if !self.debit_balance(&tx.from, tx.token_id, tx.value) {
+                        false
+                    } else {
+                        self.credit_balance(&tx.to, tx.token_id, tx.value);
+                        if !self.debit_balance(&tx.from, tx.fee_token_id, fee) {
+                            self.debit_balance(&tx.to, tx.token_id, tx.value);
+                            self.credit_balance(&tx.from, tx.token_id, tx.value);
+                            false
+                        } else {
+                            true
+                        }
+                    }
+                }
+            };
+            if !executed {
                 continue;
             }
-            if !self.can_pay_fee(&tx.from, tx.fee_token_id, tx.fee_quarks as u128) {
-                self.state.mempool.pop_front();
-                continue;
-            }
-            self.state.mempool.pop_front();
-            let value_ok = self.debit_balance(&tx.from, tx.token_id, tx.value);
-            if !value_ok {
-                continue;
-            }
-            self.credit_balance(&tx.to, tx.token_id, tx.value);
-            self.debit_balance(&tx.from, tx.fee_token_id, tx.fee_quarks as u128);
             gas += tx.gas;
             fees += tx.fee_quarks;
             tx_count += 1;

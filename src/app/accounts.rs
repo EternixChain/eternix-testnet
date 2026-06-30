@@ -141,6 +141,80 @@ impl Protocol {
             .and_then(|v| v.owner_account.clone())
     }
 
+    pub(super) fn normalize_validator_pubkey(&self, pubkey: &str) -> Option<String> {
+        let raw = pubkey.trim().strip_prefix("0x").unwrap_or(pubkey.trim());
+        let bytes = hex::decode(raw).ok()?;
+        if VerifyingKey::from_sec1_bytes(&bytes).is_err() {
+            return None;
+        }
+        Some(format!("0x{}", hex::encode(bytes)))
+    }
+
+    pub(super) fn validator_pubkey_registered(&self, pubkey: &str) -> bool {
+        self.state
+            .validators
+            .iter()
+            .any(|v| v.validator_pubkey.as_deref() == Some(pubkey))
+    }
+
+    pub(super) fn next_pending_validator_id(&self) -> String {
+        let validator_ids = self.state.validators.iter().map(|v| v.id.as_str());
+        let pending_ids = self
+            .state
+            .mempool
+            .iter()
+            .filter(|tx| tx.kind == "registerValidator")
+            .map(|tx| tx.to.as_str());
+        let next = validator_ids
+            .chain(pending_ids)
+            .filter_map(|id| {
+                let suffix = id.strip_prefix("val-")?;
+                if suffix.len() != 4 || !suffix.chars().all(|c| c.is_ascii_digit()) {
+                    return None;
+                }
+                suffix.parse::<u64>().ok()
+            })
+            .max()
+            .unwrap_or(0)
+            .saturating_add(1);
+        format!("val-{next:04}")
+    }
+
+    pub(super) fn register_validator_record(
+        &mut self,
+        validator_id: String,
+        owner_account: &str,
+        validator_pubkey: String,
+        reward_address: String,
+    ) -> String {
+        self.state.validators.push(Validator {
+            id: validator_id.clone(),
+            owner_account: Some(normalize_address(owner_account)),
+            validator_pubkey: Some(validator_pubkey),
+            reward_address: Some(normalize_address(&reward_address)),
+            state: ValidatorState::Inactive,
+            vault_quarks: 0,
+            miss_counter: 0,
+            double_sign_offenses: 0,
+            blocks_this_sub_epoch: 0,
+            cooldown_until_epoch: None,
+        });
+        validator_id
+    }
+
+    pub(super) fn refresh_validator_activation(&mut self, validator_id: &str) {
+        let active_tickets = self
+            .state
+            .tickets
+            .iter()
+            .any(|t| t.owner == validator_id && !t.dead && !t.muted && !t.retiring);
+        if let Some(v) = self.state.validators.iter_mut().find(|v| v.id == validator_id) {
+            if v.state == ValidatorState::Inactive && v.vault_quarks > 0 && active_tickets {
+                v.state = ValidatorState::Active;
+            }
+        }
+    }
+
     pub(super) fn burn_and_mint_tickets(&mut self, validator_id: &str, count: u64) {
         self.state.burn_this_sub_epoch += TICKET_COST_QUARKS.saturating_mul(count as u128);
         for _ in 0..count {
@@ -167,6 +241,8 @@ impl Protocol {
             self.state.validators.push(Validator {
                 id: validator_id.to_string(),
                 owner_account: None,
+                validator_pubkey: None,
+                reward_address: None,
                 state: ValidatorState::Active,
                 vault_quarks: 0,
                 miss_counter: 0,

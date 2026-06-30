@@ -16,6 +16,8 @@ impl Protocol {
             validators.push(Validator {
                 id: id.clone(),
                 owner_account: local_validator_account.clone(),
+                validator_pubkey: None,
+                reward_address: local_validator_account.clone(),
                 state: ValidatorState::Active,
                 vault_quarks: INITIAL_VALIDATOR_VAULT_QUARKS,
                 miss_counter: 0,
@@ -150,7 +152,7 @@ impl Protocol {
         }
         let from = self.state.wallet_addresses[self.rng.gen_range(0..self.state.wallet_addresses.len())].clone();
         let pending = self.state.pbm_pool.iter().filter(|t| t.from == from).count();
-        if pending >= 2 {
+        if pending >= 3 {
             return;
         }
         let nonce = self.state.nonce_tracker.get(&from).copied().unwrap_or(0);
@@ -171,6 +173,222 @@ impl Protocol {
             data: String::new(),
             signature_hex: String::new(),
         });
+    }
+
+    pub fn enqueue_validator_system_tx(
+        &mut self,
+        validator_id: &str,
+        value: u128,
+        kind: &'static str,
+        nonce: Option<u64>,
+        _gas_limit: Option<u64>,
+        _max_fee_per_gas: Option<u64>,
+        signature_hex: Option<String>,
+    ) -> Value {
+        if kind != "walletToVault" && kind != "vaultToWallet" && kind != "buyTicket" {
+            return json!({"ok": false, "error": "invalid validator system tx type"});
+        }
+        if value == 0 {
+            return json!({"ok": false, "error": "value must be greater than zero"});
+        }
+        if !self.state.validators.iter().any(|v| v.id == validator_id) {
+            return json!({"ok": false, "error": "validator not found"});
+        }
+        let Some(owner_account) = self.validator_owner_account(validator_id) else {
+            return json!({"ok": false, "error": "validator account not configured"});
+        };
+
+        let nonce = nonce.unwrap_or_else(|| self.state.nonce_tracker.get(&owner_account).copied().unwrap_or(0));
+        let expected_nonce = self.state.nonce_tracker.get(&owner_account).copied().unwrap_or(0);
+        if nonce < expected_nonce {
+            return json!({"ok": false, "error": format!("invalid nonce, expected >= {}", expected_nonce)});
+        }
+
+        let gas_limit = 1000_u64;
+        let max_fee_per_gas = 10_u64;
+        let fee_quarks = gas_limit.saturating_mul(max_fee_per_gas_to_quarks(max_fee_per_gas));
+
+        let required_owner_balance = match kind {
+            "walletToVault" => value.saturating_add(fee_quarks as u128),
+            "buyTicket" => TICKET_COST_QUARKS
+                .saturating_mul(value)
+                .saturating_add(fee_quarks as u128),
+            _ => fee_quarks as u128,
+        };
+        if !self.can_pay_fee(&owner_account, TOKEN_ETX_ID, required_owner_balance) {
+            return json!({"ok": false, "error": "insufficient validator account balance"});
+        }
+        if kind == "vaultToWallet"
+            && !self
+                .state
+                .validators
+                .iter()
+                .find(|v| v.id == validator_id)
+                .is_some_and(|v| v.vault_quarks >= value)
+        {
+            return json!({"ok": false, "error": "insufficient vault balance"});
+        }
+
+        let sig = match signature_hex {
+            Some(sig) => sig,
+            None => {
+                let Some(sig) = self.derive_signature_for_sender(
+                    1162,
+                    &owner_account,
+                    nonce,
+                    validator_id,
+                    TOKEN_ETX_ID,
+                    value,
+                    gas_limit,
+                    max_fee_per_gas,
+                    TOKEN_ETX_ID,
+                    "",
+                    kind,
+                ) else {
+                    return json!({"ok": false, "error": "cannot derive signature for validator account"});
+                };
+                sig
+            }
+        };
+
+        let tx = Tx {
+            chain_id: 1162,
+            from: owner_account.clone(),
+            nonce,
+            to: validator_id.to_string(),
+            token_id: TOKEN_ETX_ID,
+            value,
+            gas: gas_limit,
+            fee_quarks,
+            max_fee_per_gas,
+            kind,
+            valid_after_slot: 0,
+            fee_token_id: TOKEN_ETX_ID,
+            data: String::new(),
+            signature_hex: sig,
+        };
+        let tx_hash = tx_id(&tx);
+        self.state.nonce_tracker.insert(owner_account.clone(), nonce.saturating_add(1));
+        self.state.mempool.push_back(tx);
+
+        if kind == "buyTicket" {
+            json!({
+                "ok": true,
+                "tx_hash": tx_hash,
+                "validator_id": validator_id,
+                "account": owner_account,
+                "count": value,
+                "ticket_cost_quarks": TICKET_COST_QUARKS.saturating_mul(value),
+                "fee_quarks": fee_quarks,
+                "tx_type": kind
+            })
+        } else {
+            json!({
+                "ok": true,
+                "tx_hash": tx_hash,
+                "validator_id": validator_id,
+                "account": owner_account,
+                "amount_quarks": value,
+                "fee_quarks": fee_quarks,
+                "tx_type": kind
+            })
+        }
+    }
+
+    pub fn enqueue_register_validator_tx(
+        &mut self,
+        from: &str,
+        validator_pubkey: &str,
+        reward_address: Option<String>,
+        nonce: Option<u64>,
+        signature_hex: Option<String>,
+    ) -> Value {
+        let from = normalize_address(from);
+        self.ensure_account_exists(&from);
+        let Some(validator_pubkey) = self.normalize_validator_pubkey(validator_pubkey) else {
+            return json!({"ok": false, "error": "invalid validator_pubkey"});
+        };
+        if self.validator_pubkey_registered(&validator_pubkey)
+            || self
+                .state
+                .mempool
+                .iter()
+                .filter(|tx| tx.kind == "registerValidator")
+                .filter_map(|tx| decode_register_validator_data(&tx.data))
+                .any(|(pending_pubkey, _)| pending_pubkey == validator_pubkey)
+        {
+            return json!({"ok": false, "error": "validator_pubkey already registered"});
+        }
+
+        let reward_address = reward_address
+            .map(|addr| normalize_address(&addr))
+            .unwrap_or_else(|| from.clone());
+        let nonce = nonce.unwrap_or_else(|| self.state.nonce_tracker.get(&from).copied().unwrap_or(0));
+        let expected_nonce = self.state.nonce_tracker.get(&from).copied().unwrap_or(0);
+        if nonce < expected_nonce {
+            return json!({"ok": false, "error": format!("invalid nonce, expected >= {}", expected_nonce)});
+        }
+
+        let gas_limit = 1000_u64;
+        let max_fee_per_gas = 10_u64;
+        let fee_quarks = gas_limit.saturating_mul(max_fee_per_gas_to_quarks(max_fee_per_gas));
+        if !self.can_pay_fee(&from, TOKEN_ETX_ID, fee_quarks as u128) {
+            return json!({"ok": false, "error": "insufficient account balance"});
+        }
+
+        let validator_id = self.next_pending_validator_id();
+        let data = encode_register_validator_data(&validator_pubkey, &reward_address);
+        let sig = match signature_hex {
+            Some(sig) => sig,
+            None => {
+                let Some(sig) = self.derive_signature_for_sender(
+                    1162,
+                    &from,
+                    nonce,
+                    &validator_id,
+                    TOKEN_ETX_ID,
+                    0,
+                    gas_limit,
+                    max_fee_per_gas,
+                    TOKEN_ETX_ID,
+                    &data,
+                    "registerValidator",
+                ) else {
+                    return json!({"ok": false, "error": "cannot derive signature for sender"});
+                };
+                sig
+            }
+        };
+
+        let tx = Tx {
+            chain_id: 1162,
+            from: from.clone(),
+            nonce,
+            to: validator_id.clone(),
+            token_id: TOKEN_ETX_ID,
+            value: 0,
+            gas: gas_limit,
+            fee_quarks,
+            max_fee_per_gas,
+            kind: "registerValidator",
+            valid_after_slot: 0,
+            fee_token_id: TOKEN_ETX_ID,
+            data,
+            signature_hex: sig,
+        };
+        let tx_hash = tx_id(&tx);
+        self.state.nonce_tracker.insert(from.clone(), nonce.saturating_add(1));
+        self.state.mempool.push_back(tx);
+
+        json!({
+            "ok": true,
+            "tx_hash": tx_hash,
+            "validator_id": validator_id,
+            "operator": from,
+            "reward_address": reward_address,
+            "fee_quarks": fee_quarks,
+            "tx_type": "registerValidator"
+        })
     }
 
     pub fn request_local_ticket_retire(&mut self, count: usize) {
@@ -300,54 +518,67 @@ impl Protocol {
             RpcRequest::BuyTicket {
                 validator_id,
                 count,
+                nonce,
+                signature_hex,
             } => {
-                let cost = TICKET_COST_QUARKS.saturating_mul(count as u128);
-                let Some(owner_account) = self.validator_owner_account(&validator_id) else {
-                    return json!({"ok": false, "error": "validator account not configured"});
-                };
-                if !self.debit_balance(&owner_account, TOKEN_ETX_ID, cost) {
-                    return json!({"ok": false, "error": "insufficient validator account balance"});
-                }
-                self.burn_and_mint_tickets(&validator_id, count);
-                json!({"ok": true, "validator_id": validator_id, "burned_from": owner_account, "tickets_bought": count, "cost_quarks": cost})
+                self.enqueue_validator_system_tx(
+                    &validator_id,
+                    count as u128,
+                    "buyTicket",
+                    nonce,
+                    None,
+                    None,
+                    signature_hex,
+                )
             }
+            RpcRequest::RegisterValidator {
+                from,
+                validator_pubkey,
+                reward_address,
+                nonce,
+                signature_hex,
+            } => self.enqueue_register_validator_tx(
+                &from,
+                &validator_pubkey,
+                reward_address,
+                nonce,
+                signature_hex,
+            ),
             RpcRequest::WalletToVault {
                 validator_id,
                 amount_quarks,
+                nonce,
+                gas_limit,
+                max_fee_per_gas,
+                signature_hex,
             } => {
-                let Some(owner_account) = self.validator_owner_account(&validator_id) else {
-                    return json!({"ok": false, "error": "validator account not configured"});
-                };
-                if !self.debit_balance(&owner_account, TOKEN_ETX_ID, amount_quarks) {
-                    return json!({"ok": false, "error": "insufficient validator account balance"});
-                }
-                if let Some(v) = self.state.validators.iter_mut().find(|v| v.id == validator_id) {
-                    v.vault_quarks = v.vault_quarks.saturating_add(amount_quarks);
-                    json!({"ok": true, "validator_id": validator_id, "from": owner_account, "vault_quarks": v.vault_quarks})
-                } else {
-                    self.credit_balance(&owner_account, TOKEN_ETX_ID, amount_quarks);
-                    json!({"ok": false, "error": "validator not found"})
-                }
+                self.enqueue_validator_system_tx(
+                    &validator_id,
+                    amount_quarks,
+                    "walletToVault",
+                    nonce,
+                    gas_limit,
+                    max_fee_per_gas,
+                    signature_hex,
+                )
             }
             RpcRequest::VaultToWallet {
                 validator_id,
                 amount_quarks,
+                nonce,
+                gas_limit,
+                max_fee_per_gas,
+                signature_hex,
             } => {
-                let Some(owner_account) = self.validator_owner_account(&validator_id) else {
-                    return json!({"ok": false, "error": "validator account not configured"});
-                };
-                if let Some(v) = self.state.validators.iter_mut().find(|v| v.id == validator_id) {
-                    if v.vault_quarks < amount_quarks {
-                        return json!({"ok": false, "error": "insufficient vault balance"});
-                    }
-                    v.vault_quarks -= amount_quarks;
-                    let new_vault = v.vault_quarks;
-                    let _ = v;
-                    self.credit_balance(&owner_account, TOKEN_ETX_ID, amount_quarks);
-                    json!({"ok": true, "validator_id": validator_id, "to": owner_account, "vault_quarks": new_vault})
-                } else {
-                    json!({"ok": false, "error": "validator not found"})
-                }
+                self.enqueue_validator_system_tx(
+                    &validator_id,
+                    amount_quarks,
+                    "vaultToWallet",
+                    nonce,
+                    gas_limit,
+                    max_fee_per_gas,
+                    signature_hex,
+                )
             }
             RpcRequest::GetAccount { account_id } => {
                 let key = normalize_address(&account_id);

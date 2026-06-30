@@ -32,9 +32,35 @@ pub enum RpcRequest {
         tx_type: String,
         signature_hex: Option<String>,
     },
-    BuyTicket { validator_id: String, count: u64 },
-    WalletToVault { validator_id: String, amount_quarks: u128 },
-    VaultToWallet { validator_id: String, amount_quarks: u128 },
+    BuyTicket {
+        validator_id: String,
+        count: u64,
+        nonce: Option<u64>,
+        signature_hex: Option<String>,
+    },
+    RegisterValidator {
+        from: String,
+        validator_pubkey: String,
+        reward_address: Option<String>,
+        nonce: Option<u64>,
+        signature_hex: Option<String>,
+    },
+    WalletToVault {
+        validator_id: String,
+        amount_quarks: u128,
+        nonce: Option<u64>,
+        gas_limit: Option<u64>,
+        max_fee_per_gas: Option<u64>,
+        signature_hex: Option<String>,
+    },
+    VaultToWallet {
+        validator_id: String,
+        amount_quarks: u128,
+        nonce: Option<u64>,
+        gas_limit: Option<u64>,
+        max_fee_per_gas: Option<u64>,
+        signature_hex: Option<String>,
+    },
     GetAccount { account_id: String },
     ListAccounts,
     CreateAccount { account_id: Option<String> },
@@ -151,6 +177,19 @@ fn parse_rpc_request(v: &Value) -> Result<RpcRequest, String> {
                 .ok_or("missing validator_id")?
                 .to_string(),
             count: p.get("count").and_then(|x| x.as_u64()).unwrap_or(1),
+            nonce: p.get("nonce").and_then(|x| x.as_u64()),
+            signature_hex: p.get("signature").and_then(|x| x.as_str()).map(|s| s.to_string()),
+        }),
+        "register_validator" => Ok(RpcRequest::RegisterValidator {
+            from: p.get("from").and_then(|x| x.as_str()).ok_or("missing from")?.to_string(),
+            validator_pubkey: p
+                .get("validator_pubkey")
+                .and_then(|x| x.as_str())
+                .ok_or("missing validator_pubkey")?
+                .to_string(),
+            reward_address: p.get("reward_address").and_then(|x| x.as_str()).map(|s| s.to_string()),
+            nonce: p.get("nonce").and_then(|x| x.as_u64()),
+            signature_hex: p.get("signature").and_then(|x| x.as_str()).map(|s| s.to_string()),
         }),
         "wallet_to_vault" => Ok(RpcRequest::WalletToVault {
             validator_id: p
@@ -159,6 +198,10 @@ fn parse_rpc_request(v: &Value) -> Result<RpcRequest, String> {
                 .ok_or("missing validator_id")?
                 .to_string(),
             amount_quarks: parse_u128_field(&p, "amount_quarks")?,
+            nonce: p.get("nonce").and_then(|x| x.as_u64()),
+            gas_limit: p.get("gas_limit").and_then(|x| x.as_u64()),
+            max_fee_per_gas: p.get("max_fee_per_gas").and_then(|x| x.as_u64()),
+            signature_hex: p.get("signature").and_then(|x| x.as_str()).map(|s| s.to_string()),
         }),
         "vault_to_wallet" => Ok(RpcRequest::VaultToWallet {
             validator_id: p
@@ -167,6 +210,10 @@ fn parse_rpc_request(v: &Value) -> Result<RpcRequest, String> {
                 .ok_or("missing validator_id")?
                 .to_string(),
             amount_quarks: parse_u128_field(&p, "amount_quarks")?,
+            nonce: p.get("nonce").and_then(|x| x.as_u64()),
+            gas_limit: p.get("gas_limit").and_then(|x| x.as_u64()),
+            max_fee_per_gas: p.get("max_fee_per_gas").and_then(|x| x.as_u64()),
+            signature_hex: p.get("signature").and_then(|x| x.as_str()).map(|s| s.to_string()),
         }),
         "get_account" => Ok(RpcRequest::GetAccount {
             account_id: p

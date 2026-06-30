@@ -167,6 +167,8 @@ pub fn parse_tx_msg(msg: &str) -> Option<(String, Tx)> {
         "system" => "system",
         "pbm_tx" => "pbm_tx",
         "burnTicket" => "burnTicket",
+        "registerValidator" => "registerValidator",
+        "buyTicket" => "buyTicket",
         "walletToVault" => "walletToVault",
         _ => "transfer",
     };

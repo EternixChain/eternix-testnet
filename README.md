@@ -117,8 +117,9 @@ Validator startup behavior for this prototype:
 - No validators are preloaded in genesis.
 - Starting a validator node auto-registers one validator ID (`val-<p2p-port>`).
 - `--validator-account` binds an account address as the owner account for that validator.
-- `buy_ticket` takes `validator_id` and burns ETX from the validator's configured owner account.
-- `wallet_to_vault` and `vault_to_wallet` take `validator_id` and move ETX between the validator's configured owner account and vault.
+- `register_validator` enqueues a fixed-fee transaction that creates an inactive validator with a sequential ID (`val-0001`, `val-0002`, ...).
+- `buy_ticket` takes `validator_id` and enqueues a fixed-fee transaction that burns ETX from the validator's configured owner account.
+- `wallet_to_vault` and `vault_to_wallet` take `validator_id` and enqueue signed transactions that move ETX between the validator's configured owner account and vault.
 - It is auto-provisioned with:
   - 1 ticket
   - 50,000 ETX vault (stored in quarks internally)
@@ -178,9 +179,10 @@ Supported methods:
 - `import_private_key` `{ private_key_hex, account_id? }`
 - `etx_faucet` `{ to, amount_quarks? }`
 - `send_tx` `{ chain_id, from, nonce, to, token_id?, value, gas_limit, max_fee_per_gas, fee_token_id?, data, tx_type, signature? }`
-- `buy_ticket` `{ validator_id, count? }`
-- `wallet_to_vault` `{ validator_id, amount_quarks }`
-- `vault_to_wallet` `{ validator_id, amount_quarks }`
+- `register_validator` `{ from, validator_pubkey, reward_address?, nonce?, signature? }` (gas limit and fee are fixed)
+- `buy_ticket` `{ validator_id, count?, nonce?, signature? }` (gas limit and fee are fixed)
+- `wallet_to_vault` `{ validator_id, amount_quarks, nonce?, signature? }` (gas limit and fee are fixed)
+- `vault_to_wallet` `{ validator_id, amount_quarks, nonce?, signature? }` (gas limit and fee are fixed)
 - `get_account` `{ account_id }`
 
 Example:

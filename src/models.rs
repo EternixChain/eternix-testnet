@@ -59,6 +59,8 @@ pub enum BlockKind {
 pub struct Validator {
     pub id: String,
     pub owner_account: Option<String>,
+    pub validator_pubkey: Option<String>,
+    pub reward_address: Option<String>,
     pub state: ValidatorState,
     pub vault_quarks: u128,
     pub miss_counter: u32,

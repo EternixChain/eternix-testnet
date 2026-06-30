@@ -130,6 +130,8 @@ impl Protocol {
         self.state.validators.push(Validator {
             id: id.to_string(),
             owner_account,
+            validator_pubkey: None,
+            reward_address: None,
             state: ValidatorState::Active,
             vault_quarks: INITIAL_VALIDATOR_VAULT_QUARKS,
             miss_counter: 0,

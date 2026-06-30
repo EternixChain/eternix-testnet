@@ -299,7 +299,11 @@ fn render_mempool_panel(frame: &mut Frame, app: &Protocol, area: ratatui::layout
     let st = &app.state;
     let transfer = st.mempool.iter().filter(|tx| tx.kind == "transfer").count();
     let contract = st.mempool.iter().filter(|tx| tx.kind == "contract").count();
-    let system = st.mempool.iter().filter(|tx| tx.kind == "system").count();
+    let system = st
+        .mempool
+        .iter()
+        .filter(|tx| matches!(tx.kind, "system" | "registerValidator" | "buyTicket" | "walletToVault" | "vaultToWallet"))
+        .count();
     let last_tx = st.current_result.as_ref().map(|r| r.tx_count).unwrap_or(0);
     let last_gas = st.current_result.as_ref().map(|r| r.gas_used).unwrap_or(0);
     let last_fees = st.current_result.as_ref().map(|r| r.fees_burned).unwrap_or(0);
