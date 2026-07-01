@@ -16,6 +16,7 @@ pub struct HelloMsg {
     pub mode: String,
     pub validator_id: Option<String>,
     pub validator_account: Option<String>,
+    pub validator_bootstrap: bool,
 }
 
 pub struct P2p {
@@ -146,6 +147,7 @@ pub fn parse_hello(msg: &str) -> Option<HelloMsg> {
     } else {
         None
     };
+    let validator_bootstrap = p.len() >= 8 && p[7] == "1";
     Some(HelloMsg {
         addr: p[1].parse().ok()?,
         slot: p[2].parse().ok()?,
@@ -153,6 +155,7 @@ pub fn parse_hello(msg: &str) -> Option<HelloMsg> {
         mode: p[4].to_string(),
         validator_id,
         validator_account,
+        validator_bootstrap,
     })
 }
 
@@ -170,6 +173,7 @@ pub fn parse_tx_msg(msg: &str) -> Option<(String, Tx)> {
         "registerValidator" => "registerValidator",
         "buyTicket" => "buyTicket",
         "walletToVault" => "walletToVault",
+        "vaultToWallet" => "vaultToWallet",
         _ => "transfer",
     };
     Some((

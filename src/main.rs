@@ -12,7 +12,9 @@ use std::time::Duration;
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode};
 use crossterm::execute;
-use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
+use crossterm::terminal::{
+    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+};
 use ratatui::DefaultTerminal;
 
 use crate::app::Protocol;
@@ -29,7 +31,9 @@ fn main() -> Result<()> {
     loop {
         terminal.draw(|f| ui::render(f, &app))?;
 
-        if event::poll(tick)? && let Event::Key(key) = event::read()? {
+        if event::poll(tick)?
+            && let Event::Key(key) = event::read()?
+        {
             match key.code {
                 KeyCode::Char('q') => break,
                 KeyCode::Char('n') => app.seed_normal_tx(true),

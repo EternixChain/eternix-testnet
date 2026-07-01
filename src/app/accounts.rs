@@ -53,18 +53,20 @@ impl Protocol {
         let mut loaded = 0_u64;
         for (index, entry) in genesis.accounts.into_iter().enumerate() {
             let Some(balances) = parse_genesis_balances(&entry.balances) else {
-                self.state
-                    .events
-                    .push_front(format!("genesis account {} skipped: invalid balances", index));
+                self.state.events.push_front(format!(
+                    "genesis account {} skipped: invalid balances",
+                    index
+                ));
                 continue;
             };
 
             let address = if let Some(private_key_hex) = entry.private_key_hex {
                 let id = entry.id.unwrap_or_else(|| format!("acct-{}", index + 1));
                 let Some(account) = account_from_private_key_hex(&id, &private_key_hex) else {
-                    self.state
-                        .events
-                        .push_front(format!("genesis account {} skipped: invalid private key", index));
+                    self.state.events.push_front(format!(
+                        "genesis account {} skipped: invalid private key",
+                        index
+                    ));
                     continue;
                 };
                 let address = account.address.clone();
@@ -76,9 +78,10 @@ impl Protocol {
             } else if let Some(address) = entry.address {
                 normalize_address(&address)
             } else {
-                self.state
-                    .events
-                    .push_front(format!("genesis account {} skipped: missing address/private_key_hex", index));
+                self.state.events.push_front(format!(
+                    "genesis account {} skipped: missing address/private_key_hex",
+                    index
+                ));
                 continue;
             };
 
@@ -209,8 +212,16 @@ impl Protocol {
             .tickets
             .iter()
             .any(|t| t.owner == validator_id && !t.dead && !t.muted && !t.retiring);
-        if let Some(v) = self.state.validators.iter_mut().find(|v| v.id == validator_id) {
-            if matches!(v.state, ValidatorState::Jailed | ValidatorState::PunishedCooldown) {
+        if let Some(v) = self
+            .state
+            .validators
+            .iter_mut()
+            .find(|v| v.id == validator_id)
+        {
+            if matches!(
+                v.state,
+                ValidatorState::Jailed | ValidatorState::PunishedCooldown
+            ) {
                 return;
             }
             if v.vault_quarks == 0 {
@@ -218,7 +229,10 @@ impl Protocol {
                     v.state = ValidatorState::PausedLowVault;
                 }
             } else if active_tickets {
-                if matches!(v.state, ValidatorState::Inactive | ValidatorState::PausedLowVault) {
+                if matches!(
+                    v.state,
+                    ValidatorState::Inactive | ValidatorState::PausedLowVault
+                ) {
                     v.state = ValidatorState::Active;
                 }
             } else if v.state == ValidatorState::Active {
@@ -231,15 +245,26 @@ impl Protocol {
         matches!(kind, "registerValidator" | "walletToVault" | "buyTicket")
     }
 
-    pub(super) fn enqueue_standard_or_pbm(&mut self, mut tx: Tx) -> Result<(String, u64), String> {
+    pub(super) fn enqueue_standard_or_pbm(
+        &mut self,
+        mut tx: Tx,
+    ) -> Result<(String, u64, Tx), String> {
         let pbm_active = self.total_eligible_tickets() == 0;
         if pbm_active {
             if !Self::pbm_allowed_kind(tx.kind) {
                 return Err("transaction type not allowed while PBM is active".to_string());
             }
-            let pending = self.state.pbm_pool.iter().filter(|pending| pending.from == tx.from).count();
+            let pending = self
+                .state
+                .pbm_pool
+                .iter()
+                .filter(|pending| pending.from == tx.from)
+                .count();
             if pending >= PBM_PENDING_PER_ACCOUNT_LIMIT {
-                return Err(format!("PBM per-account limit is {}", PBM_PENDING_PER_ACCOUNT_LIMIT));
+                return Err(format!(
+                    "PBM per-account limit is {}",
+                    PBM_PENDING_PER_ACCOUNT_LIMIT
+                ));
             }
             tx.valid_after_slot = self
                 .state
@@ -248,18 +273,23 @@ impl Protocol {
                 .saturating_add(pending as u64);
             let tx_hash = tx_id(&tx);
             let valid_after_slot = tx.valid_after_slot;
+            let accepted_tx = tx.clone();
             self.state.pbm_pool.push_back(tx);
-            return Ok((tx_hash, valid_after_slot));
+            return Ok((tx_hash, valid_after_slot, accepted_tx));
         }
 
         tx.valid_after_slot = 0;
         let tx_hash = tx_id(&tx);
+        let accepted_tx = tx.clone();
         self.state.mempool.push_back(tx);
-        Ok((tx_hash, 0))
+        Ok((tx_hash, 0, accepted_tx))
     }
 
     pub(super) fn burn_and_mint_tickets(&mut self, validator_id: &str, count: u64) {
-        self.state.burn_this_sub_epoch += TICKET_COST_QUARKS.saturating_mul(count as u128);
+        let burned = TICKET_COST_QUARKS.saturating_mul(count as u128);
+        self.state.ticket_burned_total = self.state.ticket_burned_total.saturating_add(burned);
+        self.state.sub_epoch_burned_quarks = self.state.sub_epoch_burned_quarks.saturating_add(burned);
+        self.state.epoch_burned_quarks = self.state.epoch_burned_quarks.saturating_add(burned);
         for _ in 0..count {
             let next_id = self
                 .state

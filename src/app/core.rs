@@ -3,8 +3,14 @@ use super::*;
 impl Protocol {
     pub fn new(cfg: Config) -> Result<Self> {
         let p2p = P2p::new(cfg.p2p_port, &cfg.peers)?;
+        let local_validator_bootstrap =
+            cfg.mode == NodeMode::Validator && cfg.validator_id.is_none();
         let local_validator_id = if cfg.mode == NodeMode::Validator {
-            Some(format!("val-{}", cfg.p2p_port))
+            Some(
+                cfg.validator_id
+                    .clone()
+                    .unwrap_or_else(|| format!("val-{}", cfg.p2p_port)),
+            )
         } else {
             None
         };
@@ -18,23 +24,33 @@ impl Protocol {
                 owner_account: local_validator_account.clone(),
                 validator_pubkey: None,
                 reward_address: local_validator_account.clone(),
-                state: ValidatorState::Active,
-                vault_quarks: INITIAL_VALIDATOR_VAULT_QUARKS,
+                state: if local_validator_bootstrap {
+                    ValidatorState::Active
+                } else {
+                    ValidatorState::Inactive
+                },
+                vault_quarks: if local_validator_bootstrap {
+                    INITIAL_VALIDATOR_VAULT_QUARKS
+                } else {
+                    0
+                },
                 miss_counter: 0,
                 double_sign_offenses: 0,
                 blocks_this_sub_epoch: 0,
                 cooldown_until_epoch: None,
             });
-            tickets.push(Ticket {
-                id: 1,
-                owner: id.clone(),
-                bucket: 2,
-                muted: false,
-                dead: false,
-                retiring: false,
-                retire_requested_epoch: None,
-                retire_effective_epoch: None,
-            });
+            if local_validator_bootstrap {
+                tickets.push(Ticket {
+                    id: 1,
+                    owner: id.clone(),
+                    bucket: 2,
+                    muted: false,
+                    dead: false,
+                    retiring: false,
+                    retire_requested_epoch: None,
+                    retire_effective_epoch: None,
+                });
+            }
         }
 
         let mut this = Self {
@@ -52,8 +68,13 @@ impl Protocol {
                 sync_pct: 99.9,
                 burn_this_sub_epoch: 0,
                 fees_burned_total: 0,
+                ticket_burned_total: 0,
                 base_issuance_total: 0,
                 burn_offset_total: 0,
+                sub_epoch_issued_quarks: 0,
+                sub_epoch_burned_quarks: 0,
+                epoch_issued_quarks: 0,
+                epoch_burned_quarks: 0,
                 annual_inflation_ppb: 60_000_000,
                 base_reward_per_block_quarks: 0,
                 burn_offset_k_permille: 500,
@@ -66,6 +87,7 @@ impl Protocol {
                 nonce_tracker: HashMap::new(),
                 mode_local: cfg.mode,
                 local_validator_id,
+                local_validator_bootstrap,
                 accounts: HashMap::new(),
                 wallet_addresses: Vec::new(),
                 anchor_time: SystemTime::now(),
@@ -96,7 +118,9 @@ impl Protocol {
         this.state.exec_status = ExecStatus::Executing;
         this.bootstrap_accounts(&cfg.genesis_path);
         this.recompute_base_reward_per_block();
-        this.state.events.push_front(format!("node started on p2p port {}", cfg.p2p_port));
+        this.state
+            .events
+            .push_front(format!("node started on p2p port {}", cfg.p2p_port));
         Ok(this)
     }
     pub fn tick(&mut self) {
@@ -118,10 +142,18 @@ impl Protocol {
         if self.state.wallet_addresses.is_empty() {
             return;
         }
-        let from = self.state.wallet_addresses[self.rng.gen_range(0..self.state.wallet_addresses.len())].clone();
+        let from = self.state.wallet_addresses
+            [self.rng.gen_range(0..self.state.wallet_addresses.len())]
+        .clone();
         let nonce = self.state.nonce_tracker.get(&from).copied().unwrap_or(0);
-        self.state.nonce_tracker.insert(from.clone(), nonce.saturating_add(1));
-        let kind = if self.rng.gen_bool(0.2) { "contract" } else { "transfer" };
+        self.state
+            .nonce_tracker
+            .insert(from.clone(), nonce.saturating_add(1));
+        let kind = if self.rng.gen_bool(0.2) {
+            "contract"
+        } else {
+            "transfer"
+        };
         let tx = Tx {
             chain_id: 1162,
             from,
@@ -150,11 +182,18 @@ impl Protocol {
         if self.state.wallet_addresses.is_empty() {
             return;
         }
-        let from = self.state.wallet_addresses[self.rng.gen_range(0..self.state.wallet_addresses.len())].clone();
+        let from = self.state.wallet_addresses
+            [self.rng.gen_range(0..self.state.wallet_addresses.len())]
+        .clone();
         let validator_key = SigningKey::random(&mut OsRng);
         let validator_pubkey = format!(
             "0x{}",
-            hex::encode(validator_key.verifying_key().to_encoded_point(false).as_bytes())
+            hex::encode(
+                validator_key
+                    .verifying_key()
+                    .to_encoded_point(false)
+                    .as_bytes()
+            )
         );
         let _ = self.enqueue_register_validator_tx(&from, &validator_pubkey, None, None, None);
     }
@@ -182,8 +221,19 @@ impl Protocol {
             return json!({"ok": false, "error": "validator account not configured"});
         };
 
-        let nonce = nonce.unwrap_or_else(|| self.state.nonce_tracker.get(&owner_account).copied().unwrap_or(0));
-        let expected_nonce = self.state.nonce_tracker.get(&owner_account).copied().unwrap_or(0);
+        let nonce = nonce.unwrap_or_else(|| {
+            self.state
+                .nonce_tracker
+                .get(&owner_account)
+                .copied()
+                .unwrap_or(0)
+        });
+        let expected_nonce = self
+            .state
+            .nonce_tracker
+            .get(&owner_account)
+            .copied()
+            .unwrap_or(0);
         if nonce < expected_nonce {
             return json!({"ok": false, "error": format!("invalid nonce, expected >= {}", expected_nonce)});
         }
@@ -251,11 +301,16 @@ impl Protocol {
             data: String::new(),
             signature_hex: sig,
         };
-        let (tx_hash, valid_after_slot) = match self.enqueue_standard_or_pbm(tx) {
+        let (tx_hash, valid_after_slot, accepted_tx) = match self.enqueue_standard_or_pbm(tx) {
             Ok(result) => result,
             Err(error) => return json!({"ok": false, "error": error}),
         };
-        self.state.nonce_tracker.insert(owner_account.clone(), nonce.saturating_add(1));
+        self.state
+            .nonce_tracker
+            .insert(owner_account.clone(), nonce.saturating_add(1));
+        if self.p2p.mark_seen(tx_hash.clone()) {
+            self.p2p.broadcast_tx(&accepted_tx);
+        }
 
         if kind == "buyTicket" {
             json!({
@@ -312,7 +367,8 @@ impl Protocol {
         let reward_address = reward_address
             .map(|addr| normalize_address(&addr))
             .unwrap_or_else(|| from.clone());
-        let nonce = nonce.unwrap_or_else(|| self.state.nonce_tracker.get(&from).copied().unwrap_or(0));
+        let nonce =
+            nonce.unwrap_or_else(|| self.state.nonce_tracker.get(&from).copied().unwrap_or(0));
         let expected_nonce = self.state.nonce_tracker.get(&from).copied().unwrap_or(0);
         if nonce < expected_nonce {
             return json!({"ok": false, "error": format!("invalid nonce, expected >= {}", expected_nonce)});
@@ -365,11 +421,16 @@ impl Protocol {
             data,
             signature_hex: sig,
         };
-        let (tx_hash, valid_after_slot) = match self.enqueue_standard_or_pbm(tx) {
+        let (tx_hash, valid_after_slot, accepted_tx) = match self.enqueue_standard_or_pbm(tx) {
             Ok(result) => result,
             Err(error) => return json!({"ok": false, "error": error}),
         };
-        self.state.nonce_tracker.insert(from.clone(), nonce.saturating_add(1));
+        self.state
+            .nonce_tracker
+            .insert(from.clone(), nonce.saturating_add(1));
+        if self.p2p.mark_seen(tx_hash.clone()) {
+            self.p2p.broadcast_tx(&accepted_tx);
+        }
 
         json!({
             "ok": true,
@@ -396,7 +457,11 @@ impl Protocol {
             .tickets
             .iter()
             .filter(|t| {
-                t.owner == local_id && !t.dead && !t.muted && !t.retiring && self.validator_active(&t.owner)
+                t.owner == local_id
+                    && !t.dead
+                    && !t.muted
+                    && !t.retiring
+                    && self.validator_active(&t.owner)
             })
             .map(|t| t.id)
             .collect();
@@ -421,13 +486,18 @@ impl Protocol {
                 t.retire_requested_epoch = Some(request_epoch);
                 t.retire_effective_epoch = Some(finalize_epoch);
             }
-            self.state.retire_finalize.entry(finalize_epoch).or_default().push(*tid);
+            self.state
+                .retire_finalize
+                .entry(finalize_epoch)
+                .or_default()
+                .push(*tid);
         }
         self.refresh_validator_activation(&local_id);
 
         self.state.events.push_front(format!(
             "retire started: {} ticket(s), finalize at epoch {}",
-            eligible.len(), finalize_epoch
+            eligible.len(),
+            finalize_epoch
         ));
     }
     pub fn handle_rpc(&mut self, req: RpcRequest) -> Value {
@@ -482,7 +552,9 @@ impl Protocol {
                         signed
                     }
                 };
-                self.state.nonce_tracker.insert(from.clone(), nonce.saturating_add(1));
+                self.state
+                    .nonce_tracker
+                    .insert(from.clone(), nonce.saturating_add(1));
                 let fee_per_gas_quarks = max_fee_per_gas_to_quarks(max_fee_per_gas);
                 let fee_quarks = gas_limit.saturating_mul(fee_per_gas_quarks);
                 let tx = Tx {
@@ -501,25 +573,27 @@ impl Protocol {
                     data,
                     signature_hex: sig,
                 };
+                let tx_hash = tx_id(&tx);
+                if self.p2p.mark_seen(tx_hash.clone()) {
+                    self.p2p.broadcast_tx(&tx);
+                }
                 self.state.mempool.push_back(tx);
-                json!({"ok": true, "fee_quarks": fee_quarks})
+                json!({"ok": true, "tx_hash": tx_hash, "fee_quarks": fee_quarks})
             }
             RpcRequest::BuyTicket {
                 validator_id,
                 count,
                 nonce,
                 signature_hex,
-            } => {
-                self.enqueue_validator_system_tx(
-                    &validator_id,
-                    count as u128,
-                    "buyTicket",
-                    nonce,
-                    None,
-                    None,
-                    signature_hex,
-                )
-            }
+            } => self.enqueue_validator_system_tx(
+                &validator_id,
+                count as u128,
+                "buyTicket",
+                nonce,
+                None,
+                None,
+                signature_hex,
+            ),
             RpcRequest::RegisterValidator {
                 from,
                 validator_pubkey,
@@ -540,17 +614,15 @@ impl Protocol {
                 gas_limit,
                 max_fee_per_gas,
                 signature_hex,
-            } => {
-                self.enqueue_validator_system_tx(
-                    &validator_id,
-                    amount_quarks,
-                    "walletToVault",
-                    nonce,
-                    gas_limit,
-                    max_fee_per_gas,
-                    signature_hex,
-                )
-            }
+            } => self.enqueue_validator_system_tx(
+                &validator_id,
+                amount_quarks,
+                "walletToVault",
+                nonce,
+                gas_limit,
+                max_fee_per_gas,
+                signature_hex,
+            ),
             RpcRequest::VaultToWallet {
                 validator_id,
                 amount_quarks,
@@ -558,17 +630,15 @@ impl Protocol {
                 gas_limit,
                 max_fee_per_gas,
                 signature_hex,
-            } => {
-                self.enqueue_validator_system_tx(
-                    &validator_id,
-                    amount_quarks,
-                    "vaultToWallet",
-                    nonce,
-                    gas_limit,
-                    max_fee_per_gas,
-                    signature_hex,
-                )
-            }
+            } => self.enqueue_validator_system_tx(
+                &validator_id,
+                amount_quarks,
+                "vaultToWallet",
+                nonce,
+                gas_limit,
+                max_fee_per_gas,
+                signature_hex,
+            ),
             RpcRequest::GetAccount { account_id } => {
                 let key = normalize_address(&account_id);
                 self.ensure_account_exists(&key);
@@ -606,7 +676,8 @@ impl Protocol {
             RpcRequest::CreateAccount { account_id } => {
                 let signing_key = SigningKey::random(&mut OsRng);
                 let pk_hex = format!("0x{}", hex::encode(signing_key.to_bytes()));
-                let id = account_id.unwrap_or_else(|| format!("acct-{}", self.state.accounts.len() + 1));
+                let id =
+                    account_id.unwrap_or_else(|| format!("acct-{}", self.state.accounts.len() + 1));
                 match account_from_private_key_hex(&id, &pk_hex) {
                     Some(account) => {
                         let addr = account.address.clone();
@@ -628,7 +699,8 @@ impl Protocol {
                 account_id,
                 private_key_hex,
             } => {
-                let id = account_id.unwrap_or_else(|| format!("acct-{}", self.state.accounts.len() + 1));
+                let id =
+                    account_id.unwrap_or_else(|| format!("acct-{}", self.state.accounts.len() + 1));
                 match account_from_private_key_hex(&id, &private_key_hex) {
                     Some(account) => {
                         let addr = account.address.clone();

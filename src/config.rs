@@ -9,6 +9,7 @@ pub fn parse_args() -> Result<Config> {
     let mut p2p_port = 30333_u16;
     let mut rpc_port = 8545_u16;
     let mut peers: Vec<SocketAddr> = vec![];
+    let mut validator_id: Option<String> = None;
     let mut validator_account: Option<String> = None;
     let mut genesis_path = "genesis.json".to_string();
 
@@ -59,6 +60,13 @@ pub fn parse_args() -> Result<Config> {
                 }
                 validator_account = Some(args[i].clone());
             }
+            "--validator-id" => {
+                i += 1;
+                if i >= args.len() {
+                    anyhow::bail!("--validator-id requires a validator id");
+                }
+                validator_id = Some(args[i].clone());
+            }
             "--genesis" => {
                 i += 1;
                 if i >= args.len() {
@@ -71,11 +79,16 @@ pub fn parse_args() -> Result<Config> {
         i += 1;
     }
 
+    if validator_id.is_some() && validator_account.is_none() {
+        anyhow::bail!("--validator-id requires --validator-account");
+    }
+
     Ok(Config {
         mode,
         p2p_port,
         peers,
         rpc_port,
+        validator_id,
         validator_account,
         genesis_path,
     })

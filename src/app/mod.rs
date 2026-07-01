@@ -2,20 +2,20 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
-use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
-use sha2::{Digest, Sha256};
-use serde_json::{json, Value};
 use k256::ecdsa::SigningKey;
-use k256::elliptic_curve::rand_core::OsRng;
 use k256::ecdsa::signature::Signer;
 use k256::ecdsa::{RecoveryId, Signature, VerifyingKey};
+use k256::elliptic_curve::rand_core::OsRng;
+use rand::rngs::StdRng;
+use rand::{Rng, SeedableRng};
 use rlp::{Rlp, RlpStream};
+use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use sha3::Keccak256;
 
-use crate::models::*;
-use crate::p2p::{encode_slot_result, parse_hello, parse_slot_result, parse_tx_msg, tx_id, P2p};
 use crate::leader_selection::select_leader_owner;
+use crate::models::*;
+use crate::p2p::{P2p, encode_slot_result, parse_hello, parse_slot_result, parse_tx_msg, tx_id};
 use crate::rpc::RpcRequest;
 const GENESIS_EPOCH_SEED: [u8; 32] = [0x45; 32];
 const TOKEN_ETX_ID: u64 = 0;
@@ -33,7 +33,6 @@ pub struct Protocol {
     pub state: ProtocolState,
     pub p2p: P2p,
 }
-
 
 mod accounts;
 mod consensus;

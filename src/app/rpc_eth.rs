@@ -26,7 +26,12 @@ impl Protocol {
             "eth_getTransactionCount" => {
                 let addr = params.get(0).and_then(|v| v.as_str()).unwrap_or_default();
                 let tag = params.get(1).and_then(|v| v.as_str()).unwrap_or("latest");
-                let base = self.state.nonce_tracker.get(&normalize_address(addr)).copied().unwrap_or(0);
+                let base = self
+                    .state
+                    .nonce_tracker
+                    .get(&normalize_address(addr))
+                    .copied()
+                    .unwrap_or(0);
                 let n = if tag == "pending" { base } else { base };
                 json!({"jsonrpc":"2.0","id":id,"result":to_hex_qty(n)})
             }
@@ -36,23 +41,39 @@ impl Protocol {
             "eth_gasPrice" => json!({"jsonrpc":"2.0","id":id,"result":"0x3b9aca00"}),
             "eth_maxPriorityFeePerGas" => json!({"jsonrpc":"2.0","id":id,"result":"0x0"}),
             "eth_syncing" => json!({"jsonrpc":"2.0","id":id,"result":false}),
-            "eth_blockNumber" => json!({"jsonrpc":"2.0","id":id,"result":to_hex_qty(self.state.slot)}),
+            "eth_blockNumber" => {
+                json!({"jsonrpc":"2.0","id":id,"result":to_hex_qty(self.state.slot)})
+            }
             "eth_sendRawTransaction" => {
-                let raw = params.get(0).and_then(|v| v.as_str()).unwrap_or_default().to_string();
-                eprintln!("[rpc] eth_sendRawTransaction received len={} prefix={}", raw.len(), &raw.chars().take(10).collect::<String>());
+                let raw = params
+                    .get(0)
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                eprintln!(
+                    "[rpc] eth_sendRawTransaction received len={} prefix={}",
+                    raw.len(),
+                    &raw.chars().take(10).collect::<String>()
+                );
                 let decoded = decode_raw_eip1559_tx(&raw).or_else(|| decode_raw_legacy_tx(&raw));
                 let Some(tx) = decoded else {
                     eprintln!("[rpc] raw tx decode failed (type not supported or invalid)");
                     return json!({"jsonrpc":"2.0","id":id,"error":{"code":-32000,"message":"unsupported or invalid raw tx"}});
                 };
-                eprintln!("[rpc] decoded tx chain_id={} from={} nonce={} gas={} to={}", tx.chain_id, tx.from, tx.nonce, tx.gas, tx.to);
+                eprintln!(
+                    "[rpc] decoded tx chain_id={} from={} nonce={} gas={} to={}",
+                    tx.chain_id, tx.from, tx.nonce, tx.gas, tx.to
+                );
                 if tx.chain_id != 1162 {
                     eprintln!("[rpc] reject raw tx: invalid chain id {}", tx.chain_id);
                     return json!({"jsonrpc":"2.0","id":id,"error":{"code":-32000,"message":"invalid chain id"}});
                 }
                 let expected_nonce = self.state.nonce_tracker.get(&tx.from).copied().unwrap_or(0);
                 if tx.nonce < expected_nonce {
-                    eprintln!("[rpc] reject raw tx: nonce {} expected >= {}", tx.nonce, expected_nonce);
+                    eprintln!(
+                        "[rpc] reject raw tx: nonce {} expected >= {}",
+                        tx.nonce, expected_nonce
+                    );
                     return json!({"jsonrpc":"2.0","id":id,"error":{"code":-32000,"message":format!("invalid nonce expected >= {}", expected_nonce)}});
                 }
                 if tx.gas < 1000 {
@@ -63,13 +84,25 @@ impl Protocol {
                 if !self.can_pay_value(&tx.from, tx.token_id, tx.value)
                     || !self.can_pay_fee(&tx.from, tx.fee_token_id, tx.fee_quarks as u128)
                 {
-                    eprintln!("[rpc] reject raw tx: insufficient funds total_cost={}", total_cost);
+                    eprintln!(
+                        "[rpc] reject raw tx: insufficient funds total_cost={}",
+                        total_cost
+                    );
                     return json!({"jsonrpc":"2.0","id":id,"error":{"code":-32000,"message":"insufficient funds for value + fee"}});
                 }
                 let hash = format!("0x{}", hex::encode(keccak256_hex_bytes(&raw)));
                 let (tx_type_hex, v_hex, r_hex, s_hex) = extract_raw_signature_parts(&raw)
-                    .unwrap_or_else(|| ("0x0".to_string(), "0x0".to_string(), "0x0".to_string(), "0x0".to_string()));
-                self.state.nonce_tracker.insert(tx.from.clone(), tx.nonce.saturating_add(1));
+                    .unwrap_or_else(|| {
+                        (
+                            "0x0".to_string(),
+                            "0x0".to_string(),
+                            "0x0".to_string(),
+                            "0x0".to_string(),
+                        )
+                    });
+                self.state
+                    .nonce_tracker
+                    .insert(tx.from.clone(), tx.nonce.saturating_add(1));
                 self.state.mempool.push_back(tx.clone());
                 self.state.raw_txs.insert(
                     hash.clone(),
@@ -156,18 +189,30 @@ impl Protocol {
                 let n = params.get(0).and_then(|v| v.as_str()).unwrap_or("latest");
                 let full_txs = params.get(1).and_then(|v| v.as_bool()).unwrap_or(false);
                 let slot = resolve_block_tag(n, self.state.slot);
-                let block = self.state.blocks.get(&slot).cloned().unwrap_or_else(|| BlockRecord {
-                    number: slot,
-                    hash: format!("0x{}", hex::encode(hash_bytes(format!("block:{}", slot).as_bytes()))),
-                    parent_hash: if slot == 0 {
-                        "0x0000000000000000000000000000000000000000000000000000000000000000".to_string()
-                    } else {
-                        format!("0x{}", hex::encode(hash_bytes(format!("block:{}", slot - 1).as_bytes())))
-                    },
-                    timestamp_ms: unix_ms_now() as u64,
-                    gas_used: 0,
-                    tx_hashes: vec![],
-                });
+                let block = self
+                    .state
+                    .blocks
+                    .get(&slot)
+                    .cloned()
+                    .unwrap_or_else(|| BlockRecord {
+                        number: slot,
+                        hash: format!(
+                            "0x{}",
+                            hex::encode(hash_bytes(format!("block:{}", slot).as_bytes()))
+                        ),
+                        parent_hash: if slot == 0 {
+                            "0x0000000000000000000000000000000000000000000000000000000000000000"
+                                .to_string()
+                        } else {
+                            format!(
+                                "0x{}",
+                                hex::encode(hash_bytes(format!("block:{}", slot - 1).as_bytes()))
+                            )
+                        },
+                        timestamp_ms: unix_ms_now() as u64,
+                        gas_used: 0,
+                        tx_hashes: vec![],
+                    });
                 let tx_hashes = block.tx_hashes.clone();
                 let txs = if full_txs {
                     let mut out = Vec::new();
@@ -223,21 +268,23 @@ impl Protocol {
                     .block_hash_to_number
                     .get(&normalize_address(h))
                     .copied()
-                    .or_else(|| {
-                        self.state
-                            .block_hash_to_number
-                            .get(h)
-                            .copied()
-                    })
+                    .or_else(|| self.state.block_hash_to_number.get(h).copied())
                     .unwrap_or(self.state.slot);
-                let block = self.state.blocks.get(&slot).cloned().unwrap_or_else(|| BlockRecord {
-                    number: slot,
-                    hash: h.to_string(),
-                    parent_hash: "0x0000000000000000000000000000000000000000000000000000000000000000".to_string(),
-                    timestamp_ms: unix_ms_now() as u64,
-                    gas_used: 0,
-                    tx_hashes: vec![],
-                });
+                let block = self
+                    .state
+                    .blocks
+                    .get(&slot)
+                    .cloned()
+                    .unwrap_or_else(|| BlockRecord {
+                        number: slot,
+                        hash: h.to_string(),
+                        parent_hash:
+                            "0x0000000000000000000000000000000000000000000000000000000000000000"
+                                .to_string(),
+                        timestamp_ms: unix_ms_now() as u64,
+                        gas_used: 0,
+                        tx_hashes: vec![],
+                    });
                 let tx_hashes = block.tx_hashes.clone();
                 let txs = if full_txs {
                     let mut out = Vec::new();
@@ -344,7 +391,12 @@ impl Protocol {
                     .block_hash_to_number
                     .get(bh)
                     .copied()
-                    .or_else(|| self.state.block_hash_to_number.get(&normalize_address(bh)).copied());
+                    .or_else(|| {
+                        self.state
+                            .block_hash_to_number
+                            .get(&normalize_address(bh))
+                            .copied()
+                    });
                 let tx_hash = slot
                     .and_then(|s| self.state.blocks.get(&s))
                     .and_then(|b| b.tx_hashes.get(idx as usize))
@@ -367,7 +419,9 @@ impl Protocol {
                     "reward": [["0x0"]]
                 }})
             }
-            _ => json!({"jsonrpc":"2.0","id":id,"error":{"code":-32601,"message":"method not found"}}),
+            _ => {
+                json!({"jsonrpc":"2.0","id":id,"error":{"code":-32601,"message":"method not found"}})
+            }
         }
     }
     #[allow(clippy::too_many_arguments)]
@@ -390,7 +444,10 @@ impl Protocol {
         if acct.private_key_hex.is_empty() {
             return None;
         }
-        let raw = acct.private_key_hex.strip_prefix("0x").unwrap_or(&acct.private_key_hex);
+        let raw = acct
+            .private_key_hex
+            .strip_prefix("0x")
+            .unwrap_or(&acct.private_key_hex);
         let pk = hex::decode(raw).ok()?;
         let signing_key = SigningKey::from_slice(&pk).ok()?;
         let msg = tx_message_bytes(

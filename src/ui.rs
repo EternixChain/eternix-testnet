@@ -1,8 +1,8 @@
+use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Cell, Gauge, Paragraph, Row, Table, Wrap};
-use ratatui::Frame;
 
 use crate::app::Protocol;
 use crate::models::{
@@ -84,7 +84,9 @@ fn render_validator_panel(frame: &mut Frame, app: &Protocol, area: ratatui::layo
         0.0
     };
 
-    let state = local.map(|v| format_validator_state(v.state)).unwrap_or("N/A");
+    let state = local
+        .map(|v| format_validator_state(v.state))
+        .unwrap_or("N/A");
     let validator_account = local
         .and_then(|v| v.owner_account.as_deref())
         .unwrap_or("N/A");
@@ -104,7 +106,11 @@ fn render_validator_panel(frame: &mut Frame, app: &Protocol, area: ratatui::layo
     ];
     frame.render_widget(
         Paragraph::new(lines)
-            .block(Block::default().title("User / Validator").borders(Borders::ALL))
+            .block(
+                Block::default()
+                    .title("User / Validator")
+                    .borders(Borders::ALL),
+            )
             .wrap(Wrap { trim: true }),
         area,
     );
@@ -117,14 +123,22 @@ fn render_slot_panel(frame: &mut Frame, app: &Protocol, area: ratatui::layout::R
 
     let (result, result_style) = if let Some(r) = &st.current_result {
         match r.kind {
-            BlockKind::Validator => ("Validator block".to_string(), Style::default().fg(Color::Green)),
-            BlockKind::ProtocolMiss => ("Protocol block (Miss)".to_string(), Style::default().fg(Color::Red)),
-            BlockKind::ProtocolCollision => {
-                ("Protocol block (Collision)".to_string(), Style::default().fg(Color::Yellow))
-            }
-            BlockKind::ProtocolNoTickets => {
-                ("Protocol block (No tickets)".to_string(), Style::default().fg(Color::Yellow))
-            }
+            BlockKind::Validator => (
+                "Validator block".to_string(),
+                Style::default().fg(Color::Green),
+            ),
+            BlockKind::ProtocolMiss => (
+                "Protocol block (Miss)".to_string(),
+                Style::default().fg(Color::Red),
+            ),
+            BlockKind::ProtocolCollision => (
+                "Protocol block (Collision)".to_string(),
+                Style::default().fg(Color::Yellow),
+            ),
+            BlockKind::ProtocolNoTickets => (
+                "Protocol block (No tickets)".to_string(),
+                Style::default().fg(Color::Yellow),
+            ),
         }
     } else {
         ("Pending".to_string(), Style::default().fg(Color::Gray))
@@ -148,7 +162,10 @@ fn render_slot_panel(frame: &mut Frame, app: &Protocol, area: ratatui::layout::R
             Line::from(format!("Elapsed: {} ms / {} ms", elapsed, SLOT_MS)),
             Line::from(format!("Leader: {}", st.current_leader)),
             Line::from(format!("Execution: {:?}", st.exec_status)),
-            Line::from(vec![Span::styled(format!("Result: {}", result), result_style)]),
+            Line::from(vec![Span::styled(
+                format!("Result: {}", result),
+                result_style,
+            )]),
             Line::from(format!("Tx Count: {}", tx)),
             Line::from(format!("Gas Used: {}", gas)),
             Line::from(format!("Mode: {}", mode)),
@@ -158,7 +175,11 @@ fn render_slot_panel(frame: &mut Frame, app: &Protocol, area: ratatui::layout::R
             Block::default()
                 .title("Slot View")
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                .border_style(
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ),
         )
         .wrap(Wrap { trim: true }),
         chunks[0],
@@ -194,7 +215,11 @@ fn render_network_panel(frame: &mut Frame, app: &Protocol, area: ratatui::layout
             Line::from(format!("Node Role: {}", role)),
             Line::from("Slot Drift: 0"),
         ])
-        .block(Block::default().title("Network / Node").borders(Borders::ALL))
+        .block(
+            Block::default()
+                .title("Network / Node")
+                .borders(Borders::ALL),
+        )
         .wrap(Wrap { trim: true }),
         area,
     );
@@ -220,9 +245,12 @@ fn render_rewards_panel(frame: &mut Frame, app: &Protocol, area: ratatui::layout
     } else {
         0.0
     };
-    let projected_validator_blocks = (observed_validator_ratio * SUB_EPOCH_SLOTS as f64).round() as u64;
+    let projected_validator_blocks =
+        (observed_validator_ratio * SUB_EPOCH_SLOTS as f64).round() as u64;
     let est_offset_per_block = if projected_validator_blocks > 0 {
-        st.burn_offset_k_permille as u128 * st.burn_this_sub_epoch / 1000 / projected_validator_blocks as u128
+        st.burn_offset_k_permille as u128 * st.burn_this_sub_epoch
+            / 1000
+            / projected_validator_blocks as u128
     } else {
         0
     };
@@ -238,31 +266,70 @@ fn render_rewards_panel(frame: &mut Frame, app: &Protocol, area: ratatui::layout
     } else {
         0
     };
-    let net_supply = st.base_issuance_total + st.burn_offset_total;
     let total_supply = app.total_supply_quarks();
-    let trend = if st.fees_burned_total > net_supply {
-        "Deflationary"
-    } else {
-        "Inflationary"
-    };
+    let sub_epoch_trend = supply_trend(st.sub_epoch_issued_quarks, st.sub_epoch_burned_quarks);
+    let epoch_trend = supply_trend(st.epoch_issued_quarks, st.epoch_burned_quarks);
 
     frame.render_widget(
         Paragraph::new(vec![
-            Line::from(format!("Inflation: {:.2}%", st.annual_inflation_ppb as f64 / 10_000_000.0)),
-            Line::from(format!("Base Reward/Block: {}", format_etx(app.base_reward_per_block_quarks()))),
-            Line::from(format!("Burn-offset k: {:.3}", st.burn_offset_k_permille as f64 / 1000.0)),
+            Line::from(format!(
+                "Inflation: {:.2}%",
+                st.annual_inflation_ppb as f64 / 10_000_000.0
+            )),
+            Line::from(format!(
+                "Base Reward/Block: {}",
+                format_etx(app.base_reward_per_block_quarks())
+            )),
+            Line::from(format!(
+                "Burn-offset k: {:.3}",
+                st.burn_offset_k_permille as f64 / 1000.0
+            )),
             Line::from(format!("Sub-epoch: {}/{}", sub_slot, SUB_EPOCH_SLOTS)),
-            Line::from(format!("Burn Accumulated: {}", format_etx(st.burn_this_sub_epoch))),
-            Line::from(format!("Est Offset/Block: {}", format_etx(est_offset_per_block))),
-            Line::from(format!("Est Validator Reward: {}", format_etx(local_est_reward))),
-            Line::from(format!("Base Issuance Total: {}", format_etx(st.base_issuance_total))),
-            Line::from(format!("Burn-offset Total: {}", format_etx(st.burn_offset_total))),
-            Line::from(format!("Fees Burned Total: {}", format_etx(st.fees_burned_total))),
+            Line::from(format!(
+                "Fee Burn Accumulated: {}",
+                format_etx(st.burn_this_sub_epoch)
+            )),
+            Line::from(format!(
+                "Est Offset/Block: {}",
+                format_etx(est_offset_per_block)
+            )),
+            Line::from(format!(
+                "Est Validator Reward: {}",
+                format_etx(local_est_reward)
+            )),
+            Line::from(format!(
+                "Base Issuance Total: {}",
+                format_etx(st.base_issuance_total)
+            )),
+            Line::from(format!(
+                "Burn-offset Total: {}",
+                format_etx(st.burn_offset_total)
+            )),
+            Line::from(format!(
+                "Fees Burned Total: {}",
+                format_etx(st.fees_burned_total)
+            )),
+            Line::from(format!(
+                "Ticket Burns Total: {}",
+                format_etx(st.ticket_burned_total)
+            )),
             Line::from(format!("Total Supply: {}", format_etx(total_supply))),
-            Line::from(format!("Net Supply Change: {}", format_etx(net_supply.saturating_sub(st.fees_burned_total)))),
-            Line::from(format!("Trend: {}", trend)),
+            Line::from(format!(
+                "Net Supply Change This Sub-epoch: {} - {}",
+                format_signed_supply_change(st.sub_epoch_issued_quarks, st.sub_epoch_burned_quarks),
+                sub_epoch_trend
+            )),
+            Line::from(format!(
+                "Net Supply Change This Epoch: {} - {}",
+                format_signed_supply_change(st.epoch_issued_quarks, st.epoch_burned_quarks),
+                epoch_trend
+            )),
         ])
-        .block(Block::default().title("Rewards / Economy").borders(Borders::ALL))
+        .block(
+            Block::default()
+                .title("Rewards / Economy")
+                .borders(Borders::ALL),
+        )
         .wrap(Wrap { trim: true }),
         area,
     );
@@ -287,7 +354,11 @@ fn render_history_panel(frame: &mut Frame, app: &Protocol, area: ratatui::layout
     frame.render_widget(
         Table::new(
             rows,
-            [Constraint::Length(8), Constraint::Length(16), Constraint::Min(10)],
+            [
+                Constraint::Length(8),
+                Constraint::Length(16),
+                Constraint::Min(10),
+            ],
         )
         .header(Row::new(vec!["slot", "leader", "result"]).style(Style::default().fg(Color::Cyan)))
         .block(Block::default().title("Slot History").borders(Borders::ALL)),
@@ -302,11 +373,20 @@ fn render_mempool_panel(frame: &mut Frame, app: &Protocol, area: ratatui::layout
     let system = st
         .mempool
         .iter()
-        .filter(|tx| matches!(tx.kind, "system" | "registerValidator" | "buyTicket" | "walletToVault" | "vaultToWallet"))
+        .filter(|tx| {
+            matches!(
+                tx.kind,
+                "system" | "registerValidator" | "buyTicket" | "walletToVault" | "vaultToWallet"
+            )
+        })
         .count();
     let last_tx = st.current_result.as_ref().map(|r| r.tx_count).unwrap_or(0);
     let last_gas = st.current_result.as_ref().map(|r| r.gas_used).unwrap_or(0);
-    let last_fees = st.current_result.as_ref().map(|r| r.fees_burned).unwrap_or(0);
+    let last_fees = st
+        .current_result
+        .as_ref()
+        .map(|r| r.fees_burned)
+        .unwrap_or(0);
 
     frame.render_widget(
         Paragraph::new(vec![
@@ -316,7 +396,10 @@ fn render_mempool_panel(frame: &mut Frame, app: &Protocol, area: ratatui::layout
             Line::from(format!("System: {}", system)),
             Line::from(format!("Last Block Tx: {}", last_tx)),
             Line::from(format!("Last Block Gas: {}", last_gas)),
-            Line::from(format!("Last Block Fees Burned: {}", format_etx(last_fees as u128))),
+            Line::from(format!(
+                "Last Block Fees Burned: {}",
+                format_etx(last_fees as u128)
+            )),
         ])
         .block(Block::default().title("Mempool").borders(Borders::ALL))
         .wrap(Wrap { trim: true }),
@@ -330,7 +413,9 @@ fn render_liveness_bar(frame: &mut Frame, app: &Protocol, area: ratatui::layout:
         frame.render_widget(
             Paragraph::new(Line::from(vec![Span::styled(
                 "PBM ACTIVE",
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
             )]))
             .block(Block::default().title("Liveness").borders(Borders::ALL)),
             area,
@@ -397,6 +482,24 @@ fn format_etx(quarks: u128) -> String {
     let whole = quarks / 10_000_000_000;
     let fractional = quarks % 10_000_000_000;
     format!("{}.{:010} ETX", format_with_commas(whole), fractional)
+}
+
+fn format_signed_supply_change(issued_quarks: u128, burned_quarks: u128) -> String {
+    if burned_quarks > issued_quarks {
+        format!("-{}", format_etx(burned_quarks - issued_quarks))
+    } else {
+        format!("+{}", format_etx(issued_quarks - burned_quarks))
+    }
+}
+
+fn supply_trend(issued_quarks: u128, burned_quarks: u128) -> &'static str {
+    if burned_quarks > issued_quarks {
+        "deflationary"
+    } else if issued_quarks > burned_quarks {
+        "inflationary"
+    } else {
+        "neutral"
+    }
 }
 
 fn format_with_commas(value: u128) -> String {

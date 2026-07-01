@@ -100,6 +100,12 @@ Start as a validator with an explicit owner account:
 cargo run -- --mode validator --p2p-port 30333 --validator-account 0xYOUR_ADDRESS
 ```
 
+Start as a validator process for an already registered validator ID, without synthetic startup vault/tickets:
+
+```bash
+cargo run -- --mode validator --validator-id val-0001 --validator-account 0xYOUR_ADDRESS --p2p-port 30334 --rpc-port 8546 --peers 127.0.0.1:30333
+```
+
 Run with custom RPC port:
 
 ```bash
@@ -115,14 +121,17 @@ cargo run -- --genesis ./genesis.json
 Validator startup behavior for this prototype:
 
 - No validators are preloaded in genesis.
-- Starting a validator node auto-registers one validator ID (`val-<p2p-port>`).
+- Starting a validator node without `--validator-id` auto-registers one legacy bootstrap validator ID (`val-<p2p-port>`) with synthetic startup vault/ticket state.
+- Starting a validator node with `--validator-id` binds the process to that validator ID without synthetic vault/ticket state; use this for testing registered validators.
+- `--validator-id` requires `--validator-account`.
 - `--validator-account` binds an account address as the owner account for that validator.
 - `register_validator` enqueues a fixed-fee transaction that creates an inactive validator with a sequential ID (`val-0001`, `val-0002`, ...).
 - `buy_ticket` takes `validator_id` and enqueues a fixed-fee transaction that burns ETX from the validator's configured owner account.
 - `wallet_to_vault` and `vault_to_wallet` take `validator_id` and enqueue signed transactions that move ETX between the validator's configured owner account and vault.
-- It is auto-provisioned with:
+- Legacy bootstrap validators are auto-provisioned with:
   - 1 ticket
   - 50,000 ETX vault (stored in quarks internally)
+- RPC-submitted transactions are gossiped to peers so validator registration, vault funding, and ticket buys can be processed by connected nodes.
 
 ## PBM Bootstrap Mode
 
@@ -234,6 +243,37 @@ curl -s -X POST http://127.0.0.1:8545/ -H 'content-type: application/json' -d '{
 ```bash
 curl -s -X POST http://127.0.0.1:8545/ -H 'content-type: application/json' -d '{"method":"send_tx","params":{"chain_id":1162,"from":"0xYOUR_ADDRESS","nonce":1,"to":"0xRECIPIENT_ADDRESS","value":1000,"gas_limit":1000,"max_fee_per_gas":10,"data":"","tx_type":"normal_transfer"}}'
 ```
+
+### Register Then Start Validator
+
+This flow tests the chain without a pre-funded validator. Use an owner account funded by the same genesis file on both nodes, or import the same private key on each node before submitting signed owner-account transactions.
+
+Start a standard node:
+
+```bash
+cargo run -- --mode standard --p2p-port 30333 --rpc-port 8545
+```
+
+Register a validator from the standard node. The `validator_pubkey` can be the `public_key_hex` returned by `create_account` or `import_private_key`.
+
+```bash
+curl -s -X POST http://127.0.0.1:8545/ -H 'content-type: application/json' -d '{"method":"register_validator","params":{"from":"0xOWNER_ADDRESS","validator_pubkey":"0xVALIDATOR_PUBLIC_KEY"}}'
+```
+
+Wait until PBM includes the registration, then start a validator process bound to the returned `validator_id`:
+
+```bash
+cargo run -- --mode validator --validator-id val-0001 --validator-account 0xOWNER_ADDRESS --p2p-port 30334 --rpc-port 8546 --peers 127.0.0.1:30333
+```
+
+Fund the validator vault and buy tickets from the validator node RPC:
+
+```bash
+curl -s -X POST http://127.0.0.1:8546/ -H 'content-type: application/json' -d '{"method":"wallet_to_vault","params":{"validator_id":"val-0001","amount_quarks":"500000000000000"}}'
+curl -s -X POST http://127.0.0.1:8546/ -H 'content-type: application/json' -d '{"method":"buy_ticket","params":{"validator_id":"val-0001","count":1}}'
+```
+
+The vault and ticket transactions are gossiped to peers. Once the ticket is active, PBM deactivates and the validator can be selected as leader.
 
 ## Notes
 

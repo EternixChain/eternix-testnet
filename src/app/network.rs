@@ -11,6 +11,7 @@ impl Protocol {
                     &hello.mode,
                     hello.validator_id.as_deref(),
                     hello.validator_account.as_deref(),
+                    hello.validator_bootstrap,
                 );
                 if let Some(vid) = hello.validator_id {
                     self.state.validator_peers.insert(vid, hello.addr);
@@ -22,7 +23,9 @@ impl Protocol {
                 }
                 continue;
             }
-            if let Some((epoch_validator_blocks, epoch_total_slots, mut entries)) = parse_history_snapshot(&msg) {
+            if let Some((epoch_validator_blocks, epoch_total_slots, mut entries)) =
+                parse_history_snapshot(&msg)
+            {
                 if !self.state.history_synced || epoch_total_slots > self.state.epoch_total_slots {
                     self.state.epoch_validator_blocks = epoch_validator_blocks;
                     self.state.epoch_total_slots = epoch_total_slots;
@@ -33,22 +36,30 @@ impl Protocol {
                     }
                     self.rebuild_liveness_from_history();
                     self.state.history_synced = true;
-                    self.state.events.push_front("history synced from peer".to_string());
+                    self.state
+                        .events
+                        .push_front("history synced from peer".to_string());
                 }
                 continue;
             }
             if let Some(res) = parse_slot_result(&msg) {
-                self.state.remote_slot_results.entry(res.slot).or_insert(res);
+                self.state
+                    .remote_slot_results
+                    .entry(res.slot)
+                    .or_insert(res);
                 continue;
             }
-            if let Some((id, tx)) = parse_tx_msg(&msg) && self.p2p.mark_seen(id) {
-                self.state.mempool.push_back(tx);
+            if let Some((id, tx)) = parse_tx_msg(&msg)
+                && self.p2p.mark_seen(id)
+            {
+                self.accept_gossiped_tx(tx);
                 self.p2p.broadcast_raw_except(&msg, from);
             }
         }
     }
     pub(super) fn hello_payload(&self) -> String {
-        let slot_started_ms = unix_ms_now().saturating_sub(self.state.slot_started.elapsed().as_millis());
+        let slot_started_ms =
+            unix_ms_now().saturating_sub(self.state.slot_started.elapsed().as_millis());
         let validator_account = self
             .state
             .local_validator_id
@@ -57,7 +68,7 @@ impl Protocol {
             .and_then(|v| v.owner_account.clone())
             .unwrap_or_default();
         format!(
-            "{}|{}|{}|{}|{}",
+            "{}|{}|{}|{}|{}|{}",
             self.state.slot,
             slot_started_ms,
             match self.state.mode_local {
@@ -65,7 +76,12 @@ impl Protocol {
                 NodeMode::Standard => "standard",
             },
             self.state.local_validator_id.clone().unwrap_or_default(),
-            validator_account
+            validator_account,
+            if self.state.local_validator_bootstrap {
+                "1"
+            } else {
+                "0"
+            }
         )
     }
 
@@ -83,9 +99,12 @@ impl Protocol {
         self.state.sub_epoch_index = slot / SUB_EPOCH_SLOTS;
         self.state.epoch_seed = derive_epoch_seed(self.state.epoch_index);
         self.state.slot_started = Instant::now() - Duration::from_millis(elapsed as u64);
-        self.state.anchor_time = UNIX_EPOCH + Duration::from_millis(slot_started_unix_ms as u64) - Duration::from_millis(slot.saturating_mul(SLOT_MS));
+        self.state.anchor_time = UNIX_EPOCH + Duration::from_millis(slot_started_unix_ms as u64)
+            - Duration::from_millis(slot.saturating_mul(SLOT_MS));
         self.state.bootstrapped_from_peer = true;
-        self.state.events.push_front(format!("bootstrapped slot from peer: {}", slot));
+        self.state
+            .events
+            .push_front(format!("bootstrapped slot from peer: {}", slot));
         let hello = self.hello_payload();
         self.p2p.send_hello_now(&hello);
     }
@@ -103,7 +122,9 @@ impl Protocol {
                 self.state.slot_started = Instant::now() - Duration::from_millis(elapsed_ms);
                 self.state.current_leader = self.select_leader();
                 self.state.current_result = None;
-                self.state.events.push_front(format!("slot resync to {}", target_slot));
+                self.state
+                    .events
+                    .push_front(format!("slot resync to {}", target_slot));
             }
         }
     }
@@ -113,6 +134,7 @@ impl Protocol {
         mode: &str,
         validator_id: Option<&str>,
         validator_account: Option<&str>,
+        validator_bootstrap: bool,
     ) {
         if mode != "validator" {
             return;
@@ -127,29 +149,59 @@ impl Protocol {
             }
             return;
         }
+        let ticket_id = deterministic_ticket_id(id);
         self.state.validators.push(Validator {
             id: id.to_string(),
             owner_account,
             validator_pubkey: None,
             reward_address: None,
-            state: ValidatorState::Active,
-            vault_quarks: INITIAL_VALIDATOR_VAULT_QUARKS,
+            state: if validator_bootstrap {
+                ValidatorState::Active
+            } else {
+                ValidatorState::Inactive
+            },
+            vault_quarks: if validator_bootstrap {
+                INITIAL_VALIDATOR_VAULT_QUARKS
+            } else {
+                0
+            },
             miss_counter: 0,
             double_sign_offenses: 0,
             blocks_this_sub_epoch: 0,
             cooldown_until_epoch: None,
         });
-        let ticket_id = deterministic_ticket_id(id);
-        self.state.tickets.push(Ticket {
-            id: ticket_id,
-            owner: id.to_string(),
-            bucket: ((ticket_id % 254) as u8) + 2,
-            muted: false,
-            dead: false,
-            retiring: false,
-            retire_requested_epoch: None,
-            retire_effective_epoch: None,
-        });
-        self.state.events.push_front(format!("discovered validator {}", id));
+        if validator_bootstrap {
+            self.state.tickets.push(Ticket {
+                id: ticket_id,
+                owner: id.to_string(),
+                bucket: ((ticket_id % 254) as u8) + 2,
+                muted: false,
+                dead: false,
+                retiring: false,
+                retire_requested_epoch: None,
+                retire_effective_epoch: None,
+            });
+        }
+        self.state
+            .events
+            .push_front(format!("discovered validator {}", id));
+    }
+
+    pub(super) fn accept_gossiped_tx(&mut self, tx: Tx) {
+        if self.total_eligible_tickets() == 0 && Self::pbm_allowed_kind(tx.kind) {
+            let pending = self
+                .state
+                .pbm_pool
+                .iter()
+                .filter(|pending| pending.from == tx.from)
+                .count();
+            if pending < PBM_PENDING_PER_ACCOUNT_LIMIT {
+                self.state.pbm_pool.push_back(tx);
+            }
+            return;
+        }
+        let mut tx = tx;
+        tx.valid_after_slot = 0;
+        self.state.mempool.push_back(tx);
     }
 }

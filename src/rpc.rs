@@ -4,7 +4,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::Duration;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 pub struct RpcEnvelope {
     pub req: RpcRequest,
@@ -61,11 +61,21 @@ pub enum RpcRequest {
         max_fee_per_gas: Option<u64>,
         signature_hex: Option<String>,
     },
-    GetAccount { account_id: String },
+    GetAccount {
+        account_id: String,
+    },
     ListAccounts,
-    CreateAccount { account_id: Option<String> },
-    ImportPrivateKey { account_id: Option<String>, private_key_hex: String },
-    Faucet { to: String, amount_quarks: Option<u128> },
+    CreateAccount {
+        account_id: Option<String>,
+    },
+    ImportPrivateKey {
+        account_id: Option<String>,
+        private_key_hex: String,
+    },
+    Faucet {
+        to: String,
+        amount_quarks: Option<u128>,
+    },
 }
 
 pub fn start_rpc_server(port: u16) -> Receiver<RpcEnvelope> {
@@ -113,7 +123,10 @@ fn handle_connection(mut stream: TcpStream, tx: Sender<RpcEnvelope>) -> std::io:
         Ok(v) => match parse_rpc_request(&v) {
             Ok(req) => {
                 let (reply_tx, reply_rx) = mpsc::channel();
-                let _ = tx.send(RpcEnvelope { req, reply: reply_tx });
+                let _ = tx.send(RpcEnvelope {
+                    req,
+                    reply: reply_tx,
+                });
                 reply_rx
                     .recv_timeout(Duration::from_secs(2))
                     .unwrap_or_else(|_| json!({"ok": false, "error": "rpc timeout"}))
@@ -139,11 +152,18 @@ fn parse_rpc_request(v: &Value) -> Result<RpcRequest, String> {
         .and_then(|x| x.as_str())
         .ok_or("missing method")?;
 
-    if v.get("jsonrpc").and_then(|x| x.as_str()) == Some("2.0") || method.starts_with("eth_") || method.starts_with("net_") || method.starts_with("web3_") {
+    if v.get("jsonrpc").and_then(|x| x.as_str()) == Some("2.0")
+        || method.starts_with("eth_")
+        || method.starts_with("net_")
+        || method.starts_with("web3_")
+    {
         return Ok(RpcRequest::JsonRpc {
             id: v.get("id").cloned().unwrap_or(Value::Null),
             method: method.to_string(),
-            params: v.get("params").cloned().unwrap_or_else(|| Value::Array(vec![])),
+            params: v
+                .get("params")
+                .cloned()
+                .unwrap_or_else(|| Value::Array(vec![])),
         });
     }
 
@@ -151,24 +171,45 @@ fn parse_rpc_request(v: &Value) -> Result<RpcRequest, String> {
     match method {
         "send_tx" => Ok(RpcRequest::SendTx {
             chain_id: p.get("chain_id").and_then(|x| x.as_u64()).unwrap_or(1162),
-            from: p.get("from").and_then(|x| x.as_str()).ok_or("missing from")?.to_string(),
-            nonce: p.get("nonce").and_then(|x| x.as_u64()).ok_or("missing nonce")?,
-            to: p.get("to").and_then(|x| x.as_str()).ok_or("missing to")?.to_string(),
+            from: p
+                .get("from")
+                .and_then(|x| x.as_str())
+                .ok_or("missing from")?
+                .to_string(),
+            nonce: p
+                .get("nonce")
+                .and_then(|x| x.as_u64())
+                .ok_or("missing nonce")?,
+            to: p
+                .get("to")
+                .and_then(|x| x.as_str())
+                .ok_or("missing to")?
+                .to_string(),
             token_id: p.get("token_id").and_then(|x| x.as_u64()).unwrap_or(0),
             value: parse_u128_field(&p, "value")?,
-            gas_limit: p.get("gas_limit").and_then(|x| x.as_u64()).ok_or("missing gas_limit")?,
+            gas_limit: p
+                .get("gas_limit")
+                .and_then(|x| x.as_u64())
+                .ok_or("missing gas_limit")?,
             max_fee_per_gas: p
                 .get("max_fee_per_gas")
                 .and_then(|x| x.as_u64())
                 .ok_or("missing max_fee_per_gas")?,
             fee_token_id: p.get("fee_token_id").and_then(|x| x.as_u64()).unwrap_or(0),
-            data: p.get("data").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+            data: p
+                .get("data")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .to_string(),
             tx_type: p
                 .get("tx_type")
                 .and_then(|x| x.as_str())
                 .unwrap_or("normal_transfer")
                 .to_string(),
-            signature_hex: p.get("signature").and_then(|x| x.as_str()).map(|s| s.to_string()),
+            signature_hex: p
+                .get("signature")
+                .and_then(|x| x.as_str())
+                .map(|s| s.to_string()),
         }),
         "buy_ticket" => Ok(RpcRequest::BuyTicket {
             validator_id: p
@@ -178,18 +219,31 @@ fn parse_rpc_request(v: &Value) -> Result<RpcRequest, String> {
                 .to_string(),
             count: p.get("count").and_then(|x| x.as_u64()).unwrap_or(1),
             nonce: p.get("nonce").and_then(|x| x.as_u64()),
-            signature_hex: p.get("signature").and_then(|x| x.as_str()).map(|s| s.to_string()),
+            signature_hex: p
+                .get("signature")
+                .and_then(|x| x.as_str())
+                .map(|s| s.to_string()),
         }),
         "register_validator" => Ok(RpcRequest::RegisterValidator {
-            from: p.get("from").and_then(|x| x.as_str()).ok_or("missing from")?.to_string(),
+            from: p
+                .get("from")
+                .and_then(|x| x.as_str())
+                .ok_or("missing from")?
+                .to_string(),
             validator_pubkey: p
                 .get("validator_pubkey")
                 .and_then(|x| x.as_str())
                 .ok_or("missing validator_pubkey")?
                 .to_string(),
-            reward_address: p.get("reward_address").and_then(|x| x.as_str()).map(|s| s.to_string()),
+            reward_address: p
+                .get("reward_address")
+                .and_then(|x| x.as_str())
+                .map(|s| s.to_string()),
             nonce: p.get("nonce").and_then(|x| x.as_u64()),
-            signature_hex: p.get("signature").and_then(|x| x.as_str()).map(|s| s.to_string()),
+            signature_hex: p
+                .get("signature")
+                .and_then(|x| x.as_str())
+                .map(|s| s.to_string()),
         }),
         "wallet_to_vault" => Ok(RpcRequest::WalletToVault {
             validator_id: p
@@ -201,7 +255,10 @@ fn parse_rpc_request(v: &Value) -> Result<RpcRequest, String> {
             nonce: p.get("nonce").and_then(|x| x.as_u64()),
             gas_limit: p.get("gas_limit").and_then(|x| x.as_u64()),
             max_fee_per_gas: p.get("max_fee_per_gas").and_then(|x| x.as_u64()),
-            signature_hex: p.get("signature").and_then(|x| x.as_str()).map(|s| s.to_string()),
+            signature_hex: p
+                .get("signature")
+                .and_then(|x| x.as_str())
+                .map(|s| s.to_string()),
         }),
         "vault_to_wallet" => Ok(RpcRequest::VaultToWallet {
             validator_id: p
@@ -213,7 +270,10 @@ fn parse_rpc_request(v: &Value) -> Result<RpcRequest, String> {
             nonce: p.get("nonce").and_then(|x| x.as_u64()),
             gas_limit: p.get("gas_limit").and_then(|x| x.as_u64()),
             max_fee_per_gas: p.get("max_fee_per_gas").and_then(|x| x.as_u64()),
-            signature_hex: p.get("signature").and_then(|x| x.as_str()).map(|s| s.to_string()),
+            signature_hex: p
+                .get("signature")
+                .and_then(|x| x.as_str())
+                .map(|s| s.to_string()),
         }),
         "get_account" => Ok(RpcRequest::GetAccount {
             account_id: p
@@ -224,10 +284,16 @@ fn parse_rpc_request(v: &Value) -> Result<RpcRequest, String> {
         }),
         "list_accounts" => Ok(RpcRequest::ListAccounts),
         "create_account" => Ok(RpcRequest::CreateAccount {
-            account_id: p.get("account_id").and_then(|x| x.as_str()).map(|s| s.to_string()),
+            account_id: p
+                .get("account_id")
+                .and_then(|x| x.as_str())
+                .map(|s| s.to_string()),
         }),
         "import_private_key" => Ok(RpcRequest::ImportPrivateKey {
-            account_id: p.get("account_id").and_then(|x| x.as_str()).map(|s| s.to_string()),
+            account_id: p
+                .get("account_id")
+                .and_then(|x| x.as_str())
+                .map(|s| s.to_string()),
             private_key_hex: p
                 .get("private_key_hex")
                 .and_then(|x| x.as_str())
@@ -247,7 +313,9 @@ fn parse_rpc_request(v: &Value) -> Result<RpcRequest, String> {
 }
 
 fn parse_u128_field(params: &Value, field: &str) -> Result<u128, String> {
-    let value = params.get(field).ok_or_else(|| format!("missing {}", field))?;
+    let value = params
+        .get(field)
+        .ok_or_else(|| format!("missing {}", field))?;
     parse_u128_value(value, field)
 }
 

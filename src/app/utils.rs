@@ -112,7 +112,9 @@ pub(super) fn normalize_address(input: &str) -> String {
 }
 
 pub(super) fn account_from_private_key_hex(id: &str, private_key_hex: &str) -> Option<Account> {
-    let raw = private_key_hex.strip_prefix("0x").unwrap_or(private_key_hex);
+    let raw = private_key_hex
+        .strip_prefix("0x")
+        .unwrap_or(private_key_hex);
     let bytes = hex::decode(raw).ok()?;
     if bytes.len() != 32 {
         return None;
@@ -197,7 +199,10 @@ pub(super) fn decode_raw_eip1559_tx(raw_hex: &str) -> Option<Tx> {
     let raw = raw_hex.trim_start_matches("0x");
     let bytes = hex::decode(raw).ok()?;
     if bytes.is_empty() || bytes[0] != 0x02 {
-        eprintln!("[rpc][decode] unsupported tx type byte: {}", bytes.first().copied().unwrap_or_default());
+        eprintln!(
+            "[rpc][decode] unsupported tx type byte: {}",
+            bytes.first().copied().unwrap_or_default()
+        );
         return None;
     }
     let payload = &bytes[1..];
@@ -413,7 +418,9 @@ pub(super) fn pubkey_to_eth_address(vk: &VerifyingKey) -> String {
     format!("0x{}", hex::encode(&out[12..]))
 }
 
-pub(super) fn extract_raw_signature_parts(raw_hex: &str) -> Option<(String, String, String, String)> {
+pub(super) fn extract_raw_signature_parts(
+    raw_hex: &str,
+) -> Option<(String, String, String, String)> {
     let bytes = hex::decode(raw_hex.trim_start_matches("0x")).ok()?;
     if bytes.is_empty() {
         return None;
@@ -490,7 +497,10 @@ pub(super) fn wei_to_quarks(value_wei: u128) -> u128 {
     value_wei / WEI_PER_QUARK as u128
 }
 
-pub(super) fn encode_register_validator_data(validator_pubkey: &str, reward_address: &str) -> String {
+pub(super) fn encode_register_validator_data(
+    validator_pubkey: &str,
+    reward_address: &str,
+) -> String {
     json!({
         "validator_pubkey": validator_pubkey,
         "reward_address": reward_address,

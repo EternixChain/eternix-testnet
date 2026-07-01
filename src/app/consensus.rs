@@ -5,7 +5,11 @@ impl Protocol {
         self.state.slot += 1;
         self.state.slot_started = Instant::now();
         self.state.current_result = None;
-        self.state.mode = if self.total_eligible_tickets() == 0 { Mode::Pbm } else { Mode::Normal };
+        self.state.mode = if self.total_eligible_tickets() == 0 {
+            Mode::Pbm
+        } else {
+            Mode::Normal
+        };
         self.state.current_leader = self.select_leader();
         self.state.exec_status = ExecStatus::Executing;
     }
@@ -42,11 +46,18 @@ impl Protocol {
     }
 
     pub(super) fn total_eligible_tickets(&self) -> usize {
-        self.state.tickets.iter().filter(|t| !t.dead && !t.muted && self.validator_active(&t.owner)).count()
+        self.state
+            .tickets
+            .iter()
+            .filter(|t| !t.dead && !t.muted && self.validator_active(&t.owner))
+            .count()
     }
 
     pub(super) fn validator_active(&self, id: &str) -> bool {
-        self.state.validators.iter().any(|v| v.id == id && v.state == ValidatorState::Active)
+        self.state
+            .validators
+            .iter()
+            .any(|v| v.id == id && v.state == ValidatorState::Active)
     }
 
     pub(super) fn select_leader(&mut self) -> String {
@@ -72,11 +83,14 @@ impl Protocol {
             let fee = tx.fee_quarks as u128;
             let executed = match tx.kind {
                 "registerValidator" => {
-                    let Some((validator_pubkey, reward_address)) = decode_register_validator_data(&tx.data) else {
+                    let Some((validator_pubkey, reward_address)) =
+                        decode_register_validator_data(&tx.data)
+                    else {
                         self.state.mempool.pop_front();
                         continue;
                     };
-                    let Some(validator_pubkey) = self.normalize_validator_pubkey(&validator_pubkey) else {
+                    let Some(validator_pubkey) = self.normalize_validator_pubkey(&validator_pubkey)
+                    else {
                         self.state.mempool.pop_front();
                         continue;
                     };
@@ -101,7 +115,8 @@ impl Protocol {
                     }
                 }
                 "buyTicket" => {
-                    let Some(count) = u64::try_from(tx.value).ok().filter(|count| *count > 0) else {
+                    let Some(count) = u64::try_from(tx.value).ok().filter(|count| *count > 0)
+                    else {
                         self.state.mempool.pop_front();
                         continue;
                     };
@@ -140,7 +155,8 @@ impl Protocol {
                     } else if !self.debit_balance(&tx.from, TOKEN_ETX_ID, fee) {
                         self.credit_balance(&tx.from, TOKEN_ETX_ID, tx.value);
                         false
-                    } else if let Some(v) = self.state.validators.iter_mut().find(|v| v.id == tx.to) {
+                    } else if let Some(v) = self.state.validators.iter_mut().find(|v| v.id == tx.to)
+                    {
                         v.vault_quarks = v.vault_quarks.saturating_add(tx.value);
                         self.refresh_validator_activation(&tx.to);
                         true
@@ -165,7 +181,8 @@ impl Protocol {
                     self.state.mempool.pop_front();
                     if !self.debit_balance(&tx.from, TOKEN_ETX_ID, fee) {
                         false
-                    } else if let Some(v) = self.state.validators.iter_mut().find(|v| v.id == tx.to) {
+                    } else if let Some(v) = self.state.validators.iter_mut().find(|v| v.id == tx.to)
+                    {
                         v.vault_quarks -= tx.value;
                         self.credit_balance(&tx.from, TOKEN_ETX_ID, tx.value);
                         self.refresh_validator_activation(&tx.to);
@@ -210,23 +227,41 @@ impl Protocol {
                 break;
             }
         }
-        self.state.fees_burned_total += fees as u128;
-        self.state.burn_this_sub_epoch += fees as u128;
+        let fees = fees as u128;
+        self.state.fees_burned_total = self.state.fees_burned_total.saturating_add(fees);
+        self.state.burn_this_sub_epoch = self.state.burn_this_sub_epoch.saturating_add(fees);
+        self.state.sub_epoch_burned_quarks = self.state.sub_epoch_burned_quarks.saturating_add(fees);
+        self.state.epoch_burned_quarks = self.state.epoch_burned_quarks.saturating_add(fees);
         let base_reward = self.base_reward_per_block_quarks();
-        if let Some(v) = self.state.validators.iter_mut().find(|v| v.id == self.state.current_leader) {
+        if let Some(v) = self
+            .state
+            .validators
+            .iter_mut()
+            .find(|v| v.id == self.state.current_leader)
+        {
             v.blocks_this_sub_epoch += 1;
             if v.miss_counter > 0 {
                 v.miss_counter -= 1;
             }
             v.vault_quarks = v.vault_quarks.saturating_add(base_reward);
-            self.state.base_issuance_total = self.state.base_issuance_total.saturating_add(base_reward);
+            self.state.base_issuance_total =
+                self.state.base_issuance_total.saturating_add(base_reward);
+            self.state.sub_epoch_issued_quarks = self
+                .state
+                .sub_epoch_issued_quarks
+                .saturating_add(base_reward);
+            self.state.epoch_issued_quarks =
+                self.state.epoch_issued_quarks.saturating_add(base_reward);
         }
 
         if let Some(hash) = self.state.raw_tx_pending.pop_front()
             && let Some(rec) = self.state.raw_txs.get_mut(&hash)
         {
             rec.block_number = Some(self.state.slot);
-            rec.block_hash = Some(format!("0x{}", hex::encode(hash_bytes(format!("block:{}", self.state.slot).as_bytes()))));
+            rec.block_hash = Some(format!(
+                "0x{}",
+                hex::encode(hash_bytes(format!("block:{}", self.state.slot).as_bytes()))
+            ));
             rec.tx_index = Some(0);
             rec.success = Some(true);
             self.state
@@ -236,22 +271,48 @@ impl Protocol {
                 .push(hash);
         }
 
-        SlotResult { slot: self.state.slot, leader: self.state.current_leader.clone(), kind: BlockKind::Validator, tx_count, gas_used: gas, fees_burned: fees }
+        SlotResult {
+            slot: self.state.slot,
+            leader: self.state.current_leader.clone(),
+            kind: BlockKind::Validator,
+            tx_count,
+            gas_used: gas,
+            fees_burned: fees as u64,
+        }
     }
 
     pub(super) fn protocol_miss_block(&mut self) -> SlotResult {
-        if let Some(v) = self.state.validators.iter_mut().find(|v| v.id == self.state.current_leader) {
+        if let Some(v) = self
+            .state
+            .validators
+            .iter_mut()
+            .find(|v| v.id == self.state.current_leader)
+        {
             v.miss_counter += 1;
             if v.miss_counter >= 10 {
                 v.state = ValidatorState::PunishedCooldown;
                 v.cooldown_until_epoch = Some(self.state.epoch_index + 1);
             }
         }
-        SlotResult { slot: self.state.slot, leader: self.state.current_leader.clone(), kind: BlockKind::ProtocolMiss, tx_count: 0, gas_used: 0, fees_burned: 0 }
+        SlotResult {
+            slot: self.state.slot,
+            leader: self.state.current_leader.clone(),
+            kind: BlockKind::ProtocolMiss,
+            tx_count: 0,
+            gas_used: 0,
+            fees_burned: 0,
+        }
     }
 
     pub(super) fn protocol_collision_block(&mut self) -> SlotResult {
-        SlotResult { slot: self.state.slot, leader: self.state.current_leader.clone(), kind: BlockKind::ProtocolCollision, tx_count: 0, gas_used: 0, fees_burned: 0 }
+        SlotResult {
+            slot: self.state.slot,
+            leader: self.state.current_leader.clone(),
+            kind: BlockKind::ProtocolCollision,
+            tx_count: 0,
+            gas_used: 0,
+            fees_burned: 0,
+        }
     }
 
     pub(super) fn protocol_no_tickets_block(&mut self) -> SlotResult {
@@ -266,13 +327,23 @@ impl Protocol {
             tx_count = 1;
             gas_used = gas;
             fees_burned = fees;
-            self.state.fees_burned_total = self.state.fees_burned_total.saturating_add(fees as u128);
-            self.state.burn_this_sub_epoch = self.state.burn_this_sub_epoch.saturating_add(fees as u128);
+            let fees = fees as u128;
+            self.state.fees_burned_total = self.state.fees_burned_total.saturating_add(fees);
+            self.state.burn_this_sub_epoch = self.state.burn_this_sub_epoch.saturating_add(fees);
+            self.state.sub_epoch_burned_quarks = self.state.sub_epoch_burned_quarks.saturating_add(fees);
+            self.state.epoch_burned_quarks = self.state.epoch_burned_quarks.saturating_add(fees);
         }
 
         self.deactivate_pbm_if_ready();
 
-        SlotResult { slot: self.state.slot, leader: "protocol".to_string(), kind: BlockKind::ProtocolNoTickets, tx_count, gas_used, fees_burned }
+        SlotResult {
+            slot: self.state.slot,
+            leader: "protocol".to_string(),
+            kind: BlockKind::ProtocolNoTickets,
+            tx_count,
+            gas_used,
+            fees_burned,
+        }
     }
 
     pub(super) fn select_pbm_tx_index(&self) -> Option<usize> {
@@ -281,7 +352,9 @@ impl Protocol {
             .pbm_pool
             .iter()
             .enumerate()
-            .filter(|(_, tx)| Protocol::pbm_allowed_kind(tx.kind) && tx.valid_after_slot <= self.state.slot)
+            .filter(|(_, tx)| {
+                Protocol::pbm_allowed_kind(tx.kind) && tx.valid_after_slot <= self.state.slot
+            })
             .map(|(index, tx)| (index, tx.valid_after_slot, tx_id(tx)))
             .collect();
         candidates.sort_by(|a, b| (a.1, &a.2).cmp(&(b.1, &b.2)));
@@ -362,7 +435,9 @@ impl Protocol {
             tx.valid_after_slot = 0;
             self.state.mempool.push_back(tx);
         }
-        self.state.events.push_front("PBM deactivated: eligible ticket available".to_string());
+        self.state
+            .events
+            .push_front("PBM deactivated: eligible ticket available".to_string());
     }
 
     pub(super) fn run_boundaries(&mut self) {
@@ -382,6 +457,8 @@ impl Protocol {
                     {
                         v.vault_quarks += opb;
                         self.state.burn_offset_total += opb;
+                        self.state.epoch_issued_quarks =
+                            self.state.epoch_issued_quarks.saturating_add(opb);
                     }
                 }
             }
@@ -389,19 +466,30 @@ impl Protocol {
                 v.blocks_this_sub_epoch = 0;
             }
             self.state.burn_this_sub_epoch = 0;
+            self.state.sub_epoch_issued_quarks = 0;
+            self.state.sub_epoch_burned_quarks = 0;
             self.state.blocks_this_sub_epoch.clear();
             self.state.sub_epoch_index += 1;
-            self.state
-                .events
-                .push_front(format!("sub-epoch transition {}", self.state.sub_epoch_index));
+            self.state.events.push_front(format!(
+                "sub-epoch transition {}",
+                self.state.sub_epoch_index
+            ));
         }
-        if self.state.slot > 0 && self.state.slot.is_multiple_of(SUB_EPOCH_SLOTS * EPOCH_SUB_EPOCHS) {
+        if self.state.slot > 0
+            && self
+                .state
+                .slot
+                .is_multiple_of(SUB_EPOCH_SLOTS * EPOCH_SUB_EPOCHS)
+        {
             let next_epoch = self.state.epoch_index + 1;
             if next_epoch.is_multiple_of(EPOCHS_PER_YEAR) {
-                self.state.annual_inflation_ppb = (self.state.annual_inflation_ppb * 9 / 10).max(5_000_000);
+                self.state.annual_inflation_ppb =
+                    (self.state.annual_inflation_ppb * 9 / 10).max(5_000_000);
                 self.recompute_base_reward_per_block();
             }
             self.state.epoch_index = next_epoch;
+            self.state.epoch_issued_quarks = 0;
+            self.state.epoch_burned_quarks = 0;
             self.finalize_retire_for_epoch(self.state.epoch_index);
             self.rotate_epoch_seed();
             self.process_epoch_validator_transitions();
@@ -412,7 +500,8 @@ impl Protocol {
     }
 
     pub(super) fn record_hash(&mut self, r: &SlotResult) {
-        self.state.prev_hash = hash_bytes(format!("{}-{}-{}", r.slot, r.leader, r.tx_count).as_bytes());
+        self.state.prev_hash =
+            hash_bytes(format!("{}-{}-{}", r.slot, r.leader, r.tx_count).as_bytes());
     }
 
     pub(super) fn record_slot(&mut self, result: SlotResult) {
@@ -431,7 +520,10 @@ impl Protocol {
 
     pub(super) fn record_block(&mut self, result: &SlotResult) {
         let number = result.slot;
-        let hash = format!("0x{}", hex::encode(hash_bytes(format!("block:{}", number).as_bytes())));
+        let hash = format!(
+            "0x{}",
+            hex::encode(hash_bytes(format!("block:{}", number).as_bytes()))
+        );
         let parent_hash = if number == 0 {
             "0x0000000000000000000000000000000000000000000000000000000000000000".to_string()
         } else {
