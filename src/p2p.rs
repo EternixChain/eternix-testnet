@@ -195,7 +195,7 @@ pub fn parse_tx_msg(msg: &str) -> Option<(String, Tx)> {
 
 pub fn tx_id(tx: &Tx) -> String {
     let raw = format!(
-        "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
+        "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
         tx.chain_id,
         tx.from,
         tx.nonce,
@@ -207,7 +207,9 @@ pub fn tx_id(tx: &Tx) -> String {
         tx.fee_quarks,
         tx.fee_token_id,
         tx.kind,
-        tx.valid_after_slot
+        tx.valid_after_slot,
+        tx.data,
+        tx.signature_hex
     );
     let mut h = Sha256::new();
     h.update(raw.as_bytes());

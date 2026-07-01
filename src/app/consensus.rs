@@ -168,6 +168,7 @@ impl Protocol {
                     } else if let Some(v) = self.state.validators.iter_mut().find(|v| v.id == tx.to) {
                         v.vault_quarks -= tx.value;
                         self.credit_balance(&tx.from, TOKEN_ETX_ID, tx.value);
+                        self.refresh_validator_activation(&tx.to);
                         true
                     } else {
                         false
@@ -254,7 +255,114 @@ impl Protocol {
     }
 
     pub(super) fn protocol_no_tickets_block(&mut self) -> SlotResult {
-        SlotResult { slot: self.state.slot, leader: "protocol".to_string(), kind: BlockKind::ProtocolNoTickets, tx_count: 0, gas_used: 0, fees_burned: 0 }
+        let mut tx_count = 0_u32;
+        let mut gas_used = 0_u64;
+        let mut fees_burned = 0_u64;
+
+        if let Some(index) = self.select_pbm_tx_index()
+            && let Some(tx) = self.state.pbm_pool.remove(index)
+            && let Some((gas, fees)) = self.execute_pbm_tx(tx)
+        {
+            tx_count = 1;
+            gas_used = gas;
+            fees_burned = fees;
+            self.state.fees_burned_total = self.state.fees_burned_total.saturating_add(fees as u128);
+            self.state.burn_this_sub_epoch = self.state.burn_this_sub_epoch.saturating_add(fees as u128);
+        }
+
+        self.deactivate_pbm_if_ready();
+
+        SlotResult { slot: self.state.slot, leader: "protocol".to_string(), kind: BlockKind::ProtocolNoTickets, tx_count, gas_used, fees_burned }
+    }
+
+    pub(super) fn select_pbm_tx_index(&self) -> Option<usize> {
+        let mut candidates: Vec<(usize, u64, String)> = self
+            .state
+            .pbm_pool
+            .iter()
+            .enumerate()
+            .filter(|(_, tx)| Protocol::pbm_allowed_kind(tx.kind) && tx.valid_after_slot <= self.state.slot)
+            .map(|(index, tx)| (index, tx.valid_after_slot, tx_id(tx)))
+            .collect();
+        candidates.sort_by(|a, b| (a.1, &a.2).cmp(&(b.1, &b.2)));
+        candidates.first().map(|(index, _, _)| *index)
+    }
+
+    pub(super) fn execute_pbm_tx(&mut self, tx: Tx) -> Option<(u64, u64)> {
+        let fee = tx.fee_quarks as u128;
+        match tx.kind {
+            "registerValidator" => {
+                let (validator_pubkey, reward_address) = decode_register_validator_data(&tx.data)?;
+                let validator_pubkey = self.normalize_validator_pubkey(&validator_pubkey)?;
+                if self.state.validators.iter().any(|v| v.id == tx.to)
+                    || self.validator_pubkey_registered(&validator_pubkey)
+                    || !self.can_pay_fee(&tx.from, TOKEN_ETX_ID, fee)
+                {
+                    return None;
+                }
+                if !self.debit_balance(&tx.from, TOKEN_ETX_ID, fee) {
+                    return None;
+                }
+                self.register_validator_record(tx.to, &tx.from, validator_pubkey, reward_address);
+                Some((tx.gas, tx.fee_quarks))
+            }
+            "walletToVault" => {
+                let required = tx.value.saturating_add(fee);
+                if self.validator_owner_account(&tx.to).as_deref() != Some(tx.from.as_str())
+                    || !self.can_pay_fee(&tx.from, TOKEN_ETX_ID, required)
+                    || !self.state.validators.iter().any(|v| v.id == tx.to)
+                {
+                    return None;
+                }
+                if !self.debit_balance(&tx.from, TOKEN_ETX_ID, tx.value) {
+                    return None;
+                }
+                if !self.debit_balance(&tx.from, TOKEN_ETX_ID, fee) {
+                    self.credit_balance(&tx.from, TOKEN_ETX_ID, tx.value);
+                    return None;
+                }
+                if let Some(v) = self.state.validators.iter_mut().find(|v| v.id == tx.to) {
+                    v.vault_quarks = v.vault_quarks.saturating_add(tx.value);
+                    self.refresh_validator_activation(&tx.to);
+                    return Some((tx.gas, tx.fee_quarks));
+                }
+                self.credit_balance(&tx.from, TOKEN_ETX_ID, tx.value);
+                None
+            }
+            "buyTicket" => {
+                let count = u64::try_from(tx.value).ok().filter(|count| *count > 0)?;
+                let cost = TICKET_COST_QUARKS.saturating_mul(tx.value);
+                let required = cost.saturating_add(fee);
+                if self.validator_owner_account(&tx.to).as_deref() != Some(tx.from.as_str())
+                    || !self.can_pay_fee(&tx.from, TOKEN_ETX_ID, required)
+                {
+                    return None;
+                }
+                if !self.debit_balance(&tx.from, TOKEN_ETX_ID, cost) {
+                    return None;
+                }
+                if !self.debit_balance(&tx.from, TOKEN_ETX_ID, fee) {
+                    self.credit_balance(&tx.from, TOKEN_ETX_ID, cost);
+                    return None;
+                }
+                self.burn_and_mint_tickets(&tx.to, count);
+                self.refresh_validator_activation(&tx.to);
+                Some((tx.gas, tx.fee_quarks))
+            }
+            _ => None,
+        }
+    }
+
+    pub(super) fn deactivate_pbm_if_ready(&mut self) {
+        if self.total_eligible_tickets() == 0 {
+            return;
+        }
+        self.state.mode = Mode::Normal;
+        while let Some(mut tx) = self.state.pbm_pool.pop_front() {
+            tx.valid_after_slot = 0;
+            self.state.mempool.push_back(tx);
+        }
+        self.state.events.push_front("PBM deactivated: eligible ticket available".to_string());
     }
 
     pub(super) fn run_boundaries(&mut self) {
@@ -404,6 +512,7 @@ impl Protocol {
     }
 
     pub(super) fn process_epoch_validator_transitions(&mut self) {
+        let mut refresh_ids = Vec::new();
         for v in &mut self.state.validators {
             if v.state == ValidatorState::Jailed {
                 continue;
@@ -414,11 +523,15 @@ impl Protocol {
             {
                 v.cooldown_until_epoch = None;
                 if v.vault_quarks > 0 {
-                    v.state = ValidatorState::Active;
+                    v.state = ValidatorState::Inactive;
+                    refresh_ids.push(v.id.clone());
                 } else {
                     v.state = ValidatorState::PausedLowVault;
                 }
             }
+        }
+        for id in refresh_ids {
+            self.refresh_validator_activation(&id);
         }
     }
 
@@ -426,13 +539,20 @@ impl Protocol {
         let Some(ticket_ids) = self.state.retire_finalize.remove(&epoch) else {
             return;
         };
+        let mut owners = Vec::new();
         for tid in ticket_ids {
             if let Some(t) = self.state.tickets.iter_mut().find(|t| t.id == tid) {
+                owners.push(t.owner.clone());
                 t.dead = true;
                 t.muted = false;
                 t.retiring = false;
                 t.bucket = 0;
             }
+        }
+        owners.sort_unstable();
+        owners.dedup();
+        for owner in owners {
+            self.refresh_validator_activation(&owner);
         }
     }
 }

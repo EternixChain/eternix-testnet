@@ -151,28 +151,12 @@ impl Protocol {
             return;
         }
         let from = self.state.wallet_addresses[self.rng.gen_range(0..self.state.wallet_addresses.len())].clone();
-        let pending = self.state.pbm_pool.iter().filter(|t| t.from == from).count();
-        if pending >= 3 {
-            return;
-        }
-        let nonce = self.state.nonce_tracker.get(&from).copied().unwrap_or(0);
-        self.state.nonce_tracker.insert(from.clone(), nonce.saturating_add(1));
-        self.state.pbm_pool.push_back(Tx {
-            chain_id: 1162,
-            from,
-            nonce,
-            to: "0x0000000000000000000000000000000000000000".to_string(),
-            token_id: 0,
-            value: 0,
-            gas: 25_000,
-            fee_quarks: 200_000,
-            max_fee_per_gas: 8,
-            kind: "burnTicket",
-            valid_after_slot: self.state.slot + 20,
-            fee_token_id: TOKEN_ETX_ID,
-            data: String::new(),
-            signature_hex: String::new(),
-        });
+        let validator_key = SigningKey::random(&mut OsRng);
+        let validator_pubkey = format!(
+            "0x{}",
+            hex::encode(validator_key.verifying_key().to_encoded_point(false).as_bytes())
+        );
+        let _ = self.enqueue_register_validator_tx(&from, &validator_pubkey, None, None, None);
     }
 
     pub fn enqueue_validator_system_tx(
@@ -267,9 +251,11 @@ impl Protocol {
             data: String::new(),
             signature_hex: sig,
         };
-        let tx_hash = tx_id(&tx);
+        let (tx_hash, valid_after_slot) = match self.enqueue_standard_or_pbm(tx) {
+            Ok(result) => result,
+            Err(error) => return json!({"ok": false, "error": error}),
+        };
         self.state.nonce_tracker.insert(owner_account.clone(), nonce.saturating_add(1));
-        self.state.mempool.push_back(tx);
 
         if kind == "buyTicket" {
             json!({
@@ -280,6 +266,7 @@ impl Protocol {
                 "count": value,
                 "ticket_cost_quarks": TICKET_COST_QUARKS.saturating_mul(value),
                 "fee_quarks": fee_quarks,
+                "valid_after_slot": valid_after_slot,
                 "tx_type": kind
             })
         } else {
@@ -290,6 +277,7 @@ impl Protocol {
                 "account": owner_account,
                 "amount_quarks": value,
                 "fee_quarks": fee_quarks,
+                "valid_after_slot": valid_after_slot,
                 "tx_type": kind
             })
         }
@@ -313,6 +301,7 @@ impl Protocol {
                 .state
                 .mempool
                 .iter()
+                .chain(self.state.pbm_pool.iter())
                 .filter(|tx| tx.kind == "registerValidator")
                 .filter_map(|tx| decode_register_validator_data(&tx.data))
                 .any(|(pending_pubkey, _)| pending_pubkey == validator_pubkey)
@@ -376,9 +365,11 @@ impl Protocol {
             data,
             signature_hex: sig,
         };
-        let tx_hash = tx_id(&tx);
+        let (tx_hash, valid_after_slot) = match self.enqueue_standard_or_pbm(tx) {
+            Ok(result) => result,
+            Err(error) => return json!({"ok": false, "error": error}),
+        };
         self.state.nonce_tracker.insert(from.clone(), nonce.saturating_add(1));
-        self.state.mempool.push_back(tx);
 
         json!({
             "ok": true,
@@ -387,12 +378,13 @@ impl Protocol {
             "operator": from,
             "reward_address": reward_address,
             "fee_quarks": fee_quarks,
+            "valid_after_slot": valid_after_slot,
             "tx_type": "registerValidator"
         })
     }
 
     pub fn request_local_ticket_retire(&mut self, count: usize) {
-        let Some(local_id) = &self.state.local_validator_id else {
+        let Some(local_id) = self.state.local_validator_id.clone() else {
             self.state
                 .events
                 .push_front("retire rejected: not a validator node".to_string());
@@ -404,7 +396,7 @@ impl Protocol {
             .tickets
             .iter()
             .filter(|t| {
-                t.owner == *local_id && !t.dead && !t.muted && !t.retiring && self.validator_active(&t.owner)
+                t.owner == local_id && !t.dead && !t.muted && !t.retiring && self.validator_active(&t.owner)
             })
             .map(|t| t.id)
             .collect();
@@ -431,6 +423,7 @@ impl Protocol {
             }
             self.state.retire_finalize.entry(finalize_epoch).or_default().push(*tid);
         }
+        self.refresh_validator_activation(&local_id);
 
         self.state.events.push_front(format!(
             "retire started: {} ticket(s), finalize at epoch {}",
@@ -457,7 +450,7 @@ impl Protocol {
                 if chain_id != 1162 {
                     return json!({"ok": false, "error": "invalid chain_id"});
                 }
-                if tx_type != "normal_transfer" && tx_type != "pbm_tx" {
+                if tx_type != "normal_transfer" {
                     return json!({"ok": false, "error": "invalid tx_type"});
                 }
                 if gas_limit < 1000 {
@@ -502,17 +495,13 @@ impl Protocol {
                     gas: gas_limit,
                     fee_quarks,
                     max_fee_per_gas,
-                    kind: if tx_type == "pbm_tx" { "pbm_tx" } else { "transfer" },
-                    valid_after_slot: if tx_type == "pbm_tx" { self.state.slot + 20 } else { 0 },
+                    kind: "transfer",
+                    valid_after_slot: 0,
                     fee_token_id,
                     data,
                     signature_hex: sig,
                 };
-                if tx.kind == "pbm_tx" {
-                    self.state.pbm_pool.push_back(tx);
-                } else {
-                    self.state.mempool.push_back(tx);
-                }
+                self.state.mempool.push_back(tx);
                 json!({"ok": true, "fee_quarks": fee_quarks})
             }
             RpcRequest::BuyTicket {

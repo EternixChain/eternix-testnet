@@ -65,7 +65,7 @@ Controls:
 
 - `q`: quit
 - `n`: add standard mempool transaction
-- `b`: add PBM transaction
+- `b`: add a PBM validator-registration transaction
 
 ## Screenshot
 
@@ -123,6 +123,18 @@ Validator startup behavior for this prototype:
 - It is auto-provisioned with:
   - 1 ticket
   - 50,000 ETX vault (stored in quarks internally)
+
+## PBM Bootstrap Mode
+
+PBM is active when there are no eligible tickets. While PBM is active, protocol no-ticket blocks may include one eligible PBM transaction per slot.
+
+- Allowed PBM transaction types are `registerValidator`, `walletToVault`, and `buyTicket`.
+- `vaultToWallet` and generic `send_tx` PBM transactions are not PBM-allowed.
+- PBM transactions are delayed by at least 20 slots via `valid_after_slot`.
+- Each account may have at most 3 pending PBM transactions.
+- Same-account PBM transactions are assigned staggered `valid_after_slot` values so `registerValidator`, `walletToVault`, and `buyTicket` can be submitted as an ordered bootstrap sequence.
+- Eligible PBM transactions are selected deterministically by `(valid_after_slot, tx_hash)`.
+- PBM deactivates once a validator has an eligible ticket; remaining PBM transactions are moved into the normal mempool.
 
 ## Genesis
 

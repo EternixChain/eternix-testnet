@@ -163,6 +163,7 @@ impl Protocol {
             .state
             .mempool
             .iter()
+            .chain(self.state.pbm_pool.iter())
             .filter(|tx| tx.kind == "registerValidator")
             .map(|tx| tx.to.as_str());
         let next = validator_ids
@@ -209,10 +210,52 @@ impl Protocol {
             .iter()
             .any(|t| t.owner == validator_id && !t.dead && !t.muted && !t.retiring);
         if let Some(v) = self.state.validators.iter_mut().find(|v| v.id == validator_id) {
-            if v.state == ValidatorState::Inactive && v.vault_quarks > 0 && active_tickets {
-                v.state = ValidatorState::Active;
+            if matches!(v.state, ValidatorState::Jailed | ValidatorState::PunishedCooldown) {
+                return;
+            }
+            if v.vault_quarks == 0 {
+                if v.state == ValidatorState::Active {
+                    v.state = ValidatorState::PausedLowVault;
+                }
+            } else if active_tickets {
+                if matches!(v.state, ValidatorState::Inactive | ValidatorState::PausedLowVault) {
+                    v.state = ValidatorState::Active;
+                }
+            } else if v.state == ValidatorState::Active {
+                v.state = ValidatorState::Inactive;
             }
         }
+    }
+
+    pub(super) fn pbm_allowed_kind(kind: &str) -> bool {
+        matches!(kind, "registerValidator" | "walletToVault" | "buyTicket")
+    }
+
+    pub(super) fn enqueue_standard_or_pbm(&mut self, mut tx: Tx) -> Result<(String, u64), String> {
+        let pbm_active = self.total_eligible_tickets() == 0;
+        if pbm_active {
+            if !Self::pbm_allowed_kind(tx.kind) {
+                return Err("transaction type not allowed while PBM is active".to_string());
+            }
+            let pending = self.state.pbm_pool.iter().filter(|pending| pending.from == tx.from).count();
+            if pending >= PBM_PENDING_PER_ACCOUNT_LIMIT {
+                return Err(format!("PBM per-account limit is {}", PBM_PENDING_PER_ACCOUNT_LIMIT));
+            }
+            tx.valid_after_slot = self
+                .state
+                .slot
+                .saturating_add(PBM_VALID_AFTER_SLOTS)
+                .saturating_add(pending as u64);
+            let tx_hash = tx_id(&tx);
+            let valid_after_slot = tx.valid_after_slot;
+            self.state.pbm_pool.push_back(tx);
+            return Ok((tx_hash, valid_after_slot));
+        }
+
+        tx.valid_after_slot = 0;
+        let tx_hash = tx_id(&tx);
+        self.state.mempool.push_back(tx);
+        Ok((tx_hash, 0))
     }
 
     pub(super) fn burn_and_mint_tickets(&mut self, validator_id: &str, count: u64) {
