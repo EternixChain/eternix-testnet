@@ -2,6 +2,7 @@ use super::*;
 
 impl Protocol {
     pub fn total_supply_quarks(&self) -> u128 {
+        // ETX supply is held either in account balances or validator vaults; tickets are burned supply.
         let account_supply = self
             .state
             .accounts
@@ -23,6 +24,7 @@ impl Protocol {
     }
 
     pub(super) fn recompute_base_reward_per_block(&mut self) {
+        // Block rewards are fixed inside an inflation period and recomputed at configured decay boundaries.
         self.state.base_reward_per_block_quarks = self
             .total_supply_quarks()
             .saturating_mul(self.state.annual_inflation_ppb as u128)
@@ -31,6 +33,7 @@ impl Protocol {
     }
 
     pub(super) fn bootstrap_accounts(&mut self, genesis_path: &str) {
+        // Genesis is intentionally account-only; validators are introduced through startup or system txs.
         let raw = match std::fs::read_to_string(genesis_path) {
             Ok(raw) => raw,
             Err(e) => {
@@ -145,6 +148,7 @@ impl Protocol {
     }
 
     pub(super) fn normalize_validator_pubkey(&self, pubkey: &str) -> Option<String> {
+        // Validator registration stores canonical SEC1 public keys so duplicate checks are stable.
         let raw = pubkey.trim().strip_prefix("0x").unwrap_or(pubkey.trim());
         let bytes = hex::decode(raw).ok()?;
         if VerifyingKey::from_sec1_bytes(&bytes).is_err() {
@@ -161,6 +165,7 @@ impl Protocol {
     }
 
     pub(super) fn next_pending_validator_id(&self) -> String {
+        // Pending registrations reserve IDs so concurrent mempool/PBM submissions do not collide.
         let validator_ids = self.state.validators.iter().map(|v| v.id.as_str());
         let pending_ids = self
             .state
@@ -191,6 +196,7 @@ impl Protocol {
         validator_pubkey: String,
         reward_address: String,
     ) -> String {
+        // Registration creates an inactive validator; vault funding plus a live ticket activates it later.
         self.state.validators.push(Validator {
             id: validator_id.clone(),
             owner_account: Some(normalize_address(owner_account)),
@@ -207,6 +213,7 @@ impl Protocol {
     }
 
     pub(super) fn refresh_validator_activation(&mut self, validator_id: &str) {
+        // Activation is bidirectional: gaining vault/tickets promotes, losing either demotes if not jailed/cooling down.
         let active_tickets = self
             .state
             .tickets
@@ -251,6 +258,7 @@ impl Protocol {
     ) -> Result<(String, u64, Tx), String> {
         let pbm_active = self.total_eligible_tickets() == 0;
         if pbm_active {
+            // PBM only admits the bootstrap path, and staggers same-account txs to preserve nonce order.
             if !Self::pbm_allowed_kind(tx.kind) {
                 return Err("transaction type not allowed while PBM is active".to_string());
             }
@@ -286,9 +294,11 @@ impl Protocol {
     }
 
     pub(super) fn burn_and_mint_tickets(&mut self, validator_id: &str, count: u64) {
+        // Ticket costs are supply burns, but they do not feed the burn-offset reward pool.
         let burned = TICKET_COST_QUARKS.saturating_mul(count as u128);
         self.state.ticket_burned_total = self.state.ticket_burned_total.saturating_add(burned);
-        self.state.sub_epoch_burned_quarks = self.state.sub_epoch_burned_quarks.saturating_add(burned);
+        self.state.sub_epoch_burned_quarks =
+            self.state.sub_epoch_burned_quarks.saturating_add(burned);
         self.state.epoch_burned_quarks = self.state.epoch_burned_quarks.saturating_add(burned);
         for _ in 0..count {
             let next_id = self

@@ -6,6 +6,7 @@ impl Protocol {
         self.p2p.tick_hello(&hello);
         for (from, msg) in self.p2p.recv_all() {
             if let Some(hello) = parse_hello(&msg) {
+                // Hello messages double as lightweight discovery for validator identity and current slot timing.
                 self.p2p.add_peer(hello.addr);
                 self.learn_validator_from_hello(
                     &hello.mode,
@@ -16,8 +17,11 @@ impl Protocol {
                 if let Some(vid) = hello.validator_id {
                     self.state.validator_peers.insert(vid, hello.addr);
                 }
+                // Send both history and state because late-start validator nodes need executed vault/ticket state.
                 let snap = encode_history_snapshot(&self.state);
                 self.p2p.send_to(&snap, hello.addr);
+                let state_snap = encode_state_snapshot(&self.state);
+                self.p2p.send_to(&state_snap, hello.addr);
                 if !self.state.bootstrapped_from_peer {
                     self.bootstrap_slot_from_peer(hello.slot, hello.slot_started_unix_ms);
                 }
@@ -26,7 +30,8 @@ impl Protocol {
             if let Some((epoch_validator_blocks, epoch_total_slots, mut entries)) =
                 parse_history_snapshot(&msg)
             {
-                if !self.state.history_synced || epoch_total_slots > self.state.epoch_total_slots {
+                if self.state.history.is_empty() && !self.state.history_synced {
+                    // Empty nodes can bootstrap history, but running nodes must not replace local history wholesale.
                     self.state.epoch_validator_blocks = epoch_validator_blocks;
                     self.state.epoch_total_slots = epoch_total_slots;
                     self.state.history.clear();
@@ -39,14 +44,33 @@ impl Protocol {
                     self.state
                         .events
                         .push_front("history synced from peer".to_string());
+                } else {
+                    entries.sort_by_key(|e| e.slot);
+                    for entry in entries {
+                        if entry.kind == BlockKind::Validator {
+                            // After bootstrap, peer history is only trusted for positive validator-block corrections.
+                            self.merge_slot_result(entry);
+                        }
+                    }
                 }
                 continue;
             }
+            if let Some(snapshot) = parse_state_snapshot(&msg) {
+                self.merge_state_snapshot(snapshot);
+                continue;
+            }
             if let Some(res) = parse_slot_result(&msg) {
-                self.state
-                    .remote_slot_results
-                    .entry(res.slot)
-                    .or_insert(res);
+                if self.accept_remote_slot_result(&res) {
+                    if res.slot < self.state.slot {
+                        // Late validator blocks can replace provisional misses within the retained history window.
+                        self.merge_slot_result(res);
+                    } else {
+                        self.state
+                            .remote_slot_results
+                            .entry(res.slot)
+                            .or_insert(res);
+                    }
+                }
                 continue;
             }
             if let Some((id, tx)) = parse_tx_msg(&msg)
@@ -95,6 +119,7 @@ impl Protocol {
             return;
         }
         self.state.slot = slot;
+        // The wall-clock anchor lets the node catch up to peer slot numbers without persisting local time state.
         self.state.epoch_index = slot / (SUB_EPOCH_SLOTS * EPOCH_SUB_EPOCHS);
         self.state.sub_epoch_index = slot / SUB_EPOCH_SLOTS;
         self.state.epoch_seed = derive_epoch_seed(self.state.epoch_index);
@@ -114,6 +139,7 @@ impl Protocol {
         if let Ok(since_anchor) = now.duration_since(self.state.anchor_time) {
             let target_slot = since_anchor.as_millis() as u64 / SLOT_MS;
             if target_slot > self.state.slot + 1 {
+                // Resync skips missed local ticks instead of replaying every elapsed slot after a pause.
                 self.state.slot = target_slot;
                 self.state.epoch_index = target_slot / (SUB_EPOCH_SLOTS * EPOCH_SUB_EPOCHS);
                 self.state.sub_epoch_index = target_slot / SUB_EPOCH_SLOTS;
@@ -145,6 +171,7 @@ impl Protocol {
         let owner_account = validator_account.map(normalize_address);
         if let Some(v) = self.state.validators.iter_mut().find(|v| v.id == id) {
             if v.owner_account.is_none() {
+                // Hello can fill owner metadata for legacy validators before full state sync arrives.
                 v.owner_account = owner_account;
             }
             return;
@@ -158,6 +185,7 @@ impl Protocol {
             state: if validator_bootstrap {
                 ValidatorState::Active
             } else {
+                // Non-bootstrap validators must earn activation through synced/processed vault and ticket state.
                 ValidatorState::Inactive
             },
             vault_quarks: if validator_bootstrap {
@@ -189,6 +217,7 @@ impl Protocol {
 
     pub(super) fn accept_gossiped_tx(&mut self, tx: Tx) {
         if self.total_eligible_tickets() == 0 && Self::pbm_allowed_kind(tx.kind) {
+            // During PBM, eligible bootstrap txs stay delayed in pbm_pool instead of normal mempool.
             let pending = self
                 .state
                 .pbm_pool
@@ -203,5 +232,169 @@ impl Protocol {
         let mut tx = tx;
         tx.valid_after_slot = 0;
         self.state.mempool.push_back(tx);
+    }
+
+    pub(super) fn merge_state_snapshot(&mut self, snapshot: StateSnapshot) {
+        if snapshot.slot.saturating_add(2) < self.state.slot {
+            // Very stale snapshots are more likely to regress balances than to help synchronization.
+            return;
+        }
+
+        let local_progress = self.state.fees_burned_total
+            + self.state.ticket_burned_total
+            + self.state.base_issuance_total
+            + self.state.burn_offset_total;
+        let snapshot_progress = snapshot.fees_burned_total
+            + snapshot.ticket_burned_total
+            + snapshot.base_issuance_total
+            + snapshot.burn_offset_total;
+        // Account/economy state is accepted only from peers that have observed at least as much accounting progress.
+        let apply_economy = snapshot_progress >= local_progress;
+        let mut changed = false;
+
+        if apply_economy {
+            self.state.fees_burned_total = snapshot.fees_burned_total;
+            self.state.ticket_burned_total = snapshot.ticket_burned_total;
+            self.state.base_issuance_total = snapshot.base_issuance_total;
+            self.state.burn_offset_total = snapshot.burn_offset_total;
+            self.state.sub_epoch_issued_quarks = snapshot.sub_epoch_issued_quarks;
+            self.state.sub_epoch_burned_quarks = snapshot.sub_epoch_burned_quarks;
+            self.state.epoch_issued_quarks = snapshot.epoch_issued_quarks;
+            self.state.epoch_burned_quarks = snapshot.epoch_burned_quarks;
+            self.state.burn_this_sub_epoch = snapshot.burn_this_sub_epoch;
+        }
+
+        for incoming in snapshot.validators {
+            if let Some(local) = self
+                .state
+                .validators
+                .iter_mut()
+                .find(|v| v.id == incoming.id)
+            {
+                if local.owner_account.is_none() {
+                    local.owner_account = incoming.owner_account.clone();
+                }
+                if local.validator_pubkey.is_none() {
+                    local.validator_pubkey = incoming.validator_pubkey.clone();
+                }
+                if local.reward_address.is_none() {
+                    local.reward_address = incoming.reward_address.clone();
+                }
+                if incoming.vault_quarks > local.vault_quarks {
+                    // Vault sync is monotonic for the current testnet flow; withdrawals are executed locally via txs.
+                    local.vault_quarks = incoming.vault_quarks;
+                    changed = true;
+                }
+            } else {
+                self.state.validators.push(incoming);
+                changed = true;
+            }
+        }
+
+        for incoming in snapshot.tickets {
+            if let Some(local) = self.state.tickets.iter_mut().find(|t| t.id == incoming.id) {
+                *local = incoming;
+                changed = true;
+            } else {
+                self.state.tickets.push(incoming);
+                changed = true;
+            }
+        }
+
+        if apply_economy {
+            for incoming in snapshot.accounts {
+                let address = incoming.address.clone();
+                let incoming_nonce = incoming.nonce;
+                if let Some(local) = self.state.accounts.get_mut(&address) {
+                    // Balance sync prevents late validator nodes from double-counting account balance plus vault.
+                    local.balances = incoming.balances;
+                    local.nonce = incoming_nonce;
+                } else {
+                    self.state.accounts.insert(address.clone(), incoming);
+                }
+                let local_nonce = self.state.nonce_tracker.get(&address).copied().unwrap_or(0);
+                self.state
+                    .nonce_tracker
+                    .insert(address, local_nonce.max(incoming_nonce));
+            }
+            changed = true;
+        }
+
+        if changed {
+            let ids: Vec<String> = self.state.validators.iter().map(|v| v.id.clone()).collect();
+            for id in ids {
+                self.refresh_validator_activation(&id);
+            }
+            self.state.current_leader = self.select_leader();
+            self.state
+                .events
+                .push_front("state synced from peer".to_string());
+        }
+    }
+
+    pub(super) fn accept_remote_slot_result(&self, result: &SlotResult) -> bool {
+        if result.slot > self.state.slot.saturating_add(1) {
+            return false;
+        }
+        if result.slot < self.state.slot && result.kind != BlockKind::Validator {
+            // Past misses/no-ticket results are too weak to import; only validator blocks correct history.
+            return false;
+        }
+        if result.slot < self.state.slot && result.slot.saturating_add(64) < self.state.slot {
+            return false;
+        }
+        if result.slot == self.state.slot && self.state.current_result.is_some() {
+            return false;
+        }
+        let expected_leader = if result.slot == self.state.slot {
+            self.state.current_leader.clone()
+        } else {
+            // Validate past/future results against the seed for the slot being reported, not the current slot.
+            let epoch_seed = derive_epoch_seed(result.slot / (SUB_EPOCH_SLOTS * EPOCH_SUB_EPOCHS));
+            let eligible: Vec<&Ticket> = self
+                .state
+                .tickets
+                .iter()
+                .filter(|t| !t.dead && !t.muted && self.validator_active(&t.owner))
+                .collect();
+            select_leader_owner(epoch_seed, result.slot, &eligible)
+                .unwrap_or_else(|| "protocol".to_string())
+        };
+        if self.state.local_validator_id.as_deref() == Some(expected_leader.as_str())
+            && result.kind != BlockKind::Validator
+        {
+            // A local leader should produce its own block rather than accept a peer's provisional miss/PBM result.
+            return false;
+        }
+        match result.kind {
+            BlockKind::Validator => {
+                (result.leader == expected_leader && expected_leader != "protocol")
+                    || self.accept_late_cooldown_correction(result)
+            }
+            BlockKind::ProtocolNoTickets => {
+                expected_leader == "protocol" && result.leader == "protocol"
+            }
+            BlockKind::ProtocolMiss => {
+                result.leader == expected_leader && expected_leader != "protocol"
+            }
+            BlockKind::ProtocolCollision => true,
+        }
+    }
+
+    pub(super) fn accept_late_cooldown_correction(&self, result: &SlotResult) -> bool {
+        // If provisional misses pushed a peer into cooldown, allow a late validator block to repair that state.
+        if result.slot >= self.state.slot {
+            return false;
+        }
+        let Some(v) = self.state.validators.iter().find(|v| v.id == result.leader) else {
+            return false;
+        };
+        if v.state != ValidatorState::PunishedCooldown {
+            return false;
+        }
+        self.state
+            .tickets
+            .iter()
+            .any(|t| t.owner == result.leader && !t.dead && !t.muted)
     }
 }

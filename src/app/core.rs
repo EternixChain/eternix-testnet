@@ -3,6 +3,7 @@ use super::*;
 impl Protocol {
     pub fn new(cfg: Config) -> Result<Self> {
         let p2p = P2p::new(cfg.p2p_port, &cfg.peers)?;
+        // Explicit validator IDs attach to registered validators; omitted IDs keep the legacy bootstrap path.
         let local_validator_bootstrap =
             cfg.mode == NodeMode::Validator && cfg.validator_id.is_none();
         let local_validator_id = if cfg.mode == NodeMode::Validator {
@@ -19,6 +20,7 @@ impl Protocol {
         let mut validators = vec![];
         let mut tickets = vec![];
         if let Some(id) = &local_validator_id {
+            // Non-bootstrap validators start empty and learn registration/vault/ticket state from peers or txs.
             validators.push(Validator {
                 id: id.clone(),
                 owner_account: local_validator_account.clone(),
@@ -185,6 +187,7 @@ impl Protocol {
         let from = self.state.wallet_addresses
             [self.rng.gen_range(0..self.state.wallet_addresses.len())]
         .clone();
+        // The TUI PBM shortcut now exercises the real registration transaction path.
         let validator_key = SigningKey::random(&mut OsRng);
         let validator_pubkey = format!(
             "0x{}",
@@ -242,6 +245,7 @@ impl Protocol {
         let max_fee_per_gas = 10_u64;
         let fee_quarks = gas_limit.saturating_mul(max_fee_per_gas_to_quarks(max_fee_per_gas));
 
+        // Fixed-fee validator system txs make vault/ticket flows predictable during PBM bootstrap.
         let required_owner_balance = match kind {
             "walletToVault" => value.saturating_add(fee_quarks as u128),
             "buyTicket" => TICKET_COST_QUARKS
@@ -383,6 +387,7 @@ impl Protocol {
 
         let validator_id = self.next_pending_validator_id();
         let data = encode_register_validator_data(&validator_pubkey, &reward_address);
+        // Registration encodes metadata in tx.data so it can travel through the existing Tx gossip format.
         let sig = match signature_hex {
             Some(sig) => sig,
             None => {
@@ -478,6 +483,7 @@ impl Protocol {
         let request_epoch = self.state.epoch_index;
         let finalize_epoch = request_epoch + 2;
 
+        // Retirement mutes tickets immediately, then finalizes them after the cooldown epoch window.
         for tid in &eligible {
             if let Some(t) = self.state.tickets.iter_mut().find(|t| t.id == *tid) {
                 t.retiring = true;

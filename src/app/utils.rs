@@ -10,6 +10,7 @@ pub(super) fn hash_bytes(input: &[u8]) -> [u8; 32] {
 }
 
 pub(super) fn deterministic_ticket_id(validator_id: &str) -> u64 {
+    // Discovered legacy validators need stable synthetic ticket IDs across peers.
     let h = hash_bytes(validator_id.as_bytes());
     let mut arr = [0_u8; 8];
     arr.copy_from_slice(&h[..8]);
@@ -24,6 +25,7 @@ pub(super) fn unix_ms_now() -> u128 {
 }
 
 pub(super) fn encode_history_snapshot(state: &ProtocolState) -> String {
+    // History snapshots are deliberately compact UDP payloads used for bootstrapping and later corrections.
     let mut parts = vec![format!(
         "HIST|{}|{}",
         state.epoch_validator_blocks, state.epoch_total_slots
@@ -91,6 +93,225 @@ pub(super) fn parse_history_snapshot(msg: &str) -> Option<(u64, u64, Vec<SlotRes
     Some((evb, ets, out))
 }
 
+pub(super) struct StateSnapshot {
+    pub slot: u64,
+    pub validators: Vec<Validator>,
+    pub tickets: Vec<Ticket>,
+    pub accounts: Vec<Account>,
+    pub fees_burned_total: u128,
+    pub ticket_burned_total: u128,
+    pub base_issuance_total: u128,
+    pub burn_offset_total: u128,
+    pub sub_epoch_issued_quarks: u128,
+    pub sub_epoch_burned_quarks: u128,
+    pub epoch_issued_quarks: u128,
+    pub epoch_burned_quarks: u128,
+    pub burn_this_sub_epoch: u128,
+}
+
+pub(super) fn encode_state_snapshot(state: &ProtocolState) -> String {
+    // STATE is a simple line protocol: E=economy, V=validator, T=ticket, A=account.
+    let mut parts = vec![
+        "STATE".to_string(),
+        format!(
+            "E,{},{},{},{},{},{},{},{},{},{}",
+            state.slot,
+            state.fees_burned_total,
+            state.ticket_burned_total,
+            state.base_issuance_total,
+            state.burn_offset_total,
+            state.sub_epoch_issued_quarks,
+            state.sub_epoch_burned_quarks,
+            state.epoch_issued_quarks,
+            state.epoch_burned_quarks,
+            state.burn_this_sub_epoch
+        ),
+    ];
+    for v in &state.validators {
+        parts.push(format!(
+            "V,{},{},{},{},{},{},{},{}",
+            v.id,
+            encode_opt(v.owner_account.as_deref()),
+            encode_opt(v.validator_pubkey.as_deref()),
+            encode_opt(v.reward_address.as_deref()),
+            encode_validator_state(v.state),
+            v.vault_quarks,
+            v.miss_counter,
+            v.cooldown_until_epoch
+                .map(|x| x.to_string())
+                .unwrap_or_else(|| "-".to_string())
+        ));
+    }
+    for t in &state.tickets {
+        parts.push(format!(
+            "T,{},{},{},{},{},{},{},{}",
+            t.id,
+            t.owner,
+            t.bucket,
+            t.muted as u8,
+            t.dead as u8,
+            t.retiring as u8,
+            t.retire_requested_epoch
+                .map(|x| x.to_string())
+                .unwrap_or_else(|| "-".to_string()),
+            t.retire_effective_epoch
+                .map(|x| x.to_string())
+                .unwrap_or_else(|| "-".to_string())
+        ));
+    }
+    for account in state.accounts.values() {
+        // Only balances and nonces are shared; private keys remain local to the node that imported/generated them.
+        let balances = account
+            .balances
+            .iter()
+            .map(|(token_id, balance)| format!("{}:{}", token_id, balance))
+            .collect::<Vec<_>>()
+            .join(";");
+        let nonce = state
+            .nonce_tracker
+            .get(&account.address)
+            .copied()
+            .unwrap_or(0);
+        parts.push(format!(
+            "A,{},{},{}",
+            account.address,
+            nonce,
+            if balances.is_empty() {
+                "-"
+            } else {
+                balances.as_str()
+            }
+        ));
+    }
+    parts.join("|")
+}
+
+pub(super) fn parse_state_snapshot(msg: &str) -> Option<StateSnapshot> {
+    // Parsing returns None on malformed numeric fields so truncated UDP snapshots are ignored safely.
+    let p: Vec<&str> = msg.split('|').collect();
+    if p.first().copied() != Some("STATE") {
+        return None;
+    }
+    let mut slot = 0;
+    let mut fees_burned_total = 0;
+    let mut ticket_burned_total = 0;
+    let mut base_issuance_total = 0;
+    let mut burn_offset_total = 0;
+    let mut sub_epoch_issued_quarks = 0;
+    let mut sub_epoch_burned_quarks = 0;
+    let mut epoch_issued_quarks = 0;
+    let mut epoch_burned_quarks = 0;
+    let mut burn_this_sub_epoch = 0;
+    let mut validators = Vec::new();
+    let mut tickets = Vec::new();
+    let mut accounts = Vec::new();
+    for chunk in p.iter().skip(1) {
+        let f: Vec<&str> = chunk.split(',').collect();
+        match f.first().copied() {
+            Some("E") if f.len() == 11 => {
+                slot = f[1].parse().ok()?;
+                fees_burned_total = f[2].parse().ok()?;
+                ticket_burned_total = f[3].parse().ok()?;
+                base_issuance_total = f[4].parse().ok()?;
+                burn_offset_total = f[5].parse().ok()?;
+                sub_epoch_issued_quarks = f[6].parse().ok()?;
+                sub_epoch_burned_quarks = f[7].parse().ok()?;
+                epoch_issued_quarks = f[8].parse().ok()?;
+                epoch_burned_quarks = f[9].parse().ok()?;
+                burn_this_sub_epoch = f[10].parse().ok()?;
+            }
+            Some("V") if f.len() == 9 => validators.push(Validator {
+                id: f[1].to_string(),
+                owner_account: decode_opt(f[2]).map(normalize_address),
+                validator_pubkey: decode_opt(f[3]).map(str::to_string),
+                reward_address: decode_opt(f[4]).map(normalize_address),
+                state: decode_validator_state(f[5])?,
+                vault_quarks: f[6].parse().ok()?,
+                miss_counter: f[7].parse().ok()?,
+                double_sign_offenses: 0,
+                blocks_this_sub_epoch: 0,
+                cooldown_until_epoch: decode_opt(f[8]).and_then(|x| x.parse().ok()),
+            }),
+            Some("T") if f.len() == 9 => tickets.push(Ticket {
+                id: f[1].parse().ok()?,
+                owner: f[2].to_string(),
+                bucket: f[3].parse().ok()?,
+                muted: f[4] == "1",
+                dead: f[5] == "1",
+                retiring: f[6] == "1",
+                retire_requested_epoch: decode_opt(f[7]).and_then(|x| x.parse().ok()),
+                retire_effective_epoch: decode_opt(f[8]).and_then(|x| x.parse().ok()),
+            }),
+            Some("A") if f.len() == 4 => accounts.push(Account {
+                id: normalize_address(f[1]),
+                private_key_hex: String::new(),
+                public_key_hex: String::new(),
+                address: normalize_address(f[1]),
+                nonce: f[2].parse().ok()?,
+                balances: parse_snapshot_balances(f[3])?,
+            }),
+            _ => {}
+        }
+    }
+    Some(StateSnapshot {
+        slot,
+        validators,
+        tickets,
+        accounts,
+        fees_burned_total,
+        ticket_burned_total,
+        base_issuance_total,
+        burn_offset_total,
+        sub_epoch_issued_quarks,
+        sub_epoch_burned_quarks,
+        epoch_issued_quarks,
+        epoch_burned_quarks,
+        burn_this_sub_epoch,
+    })
+}
+
+fn parse_snapshot_balances(raw: &str) -> Option<HashMap<u64, u128>> {
+    // Balances are encoded as token:amount pairs to avoid nested JSON inside UDP state messages.
+    let mut balances = HashMap::new();
+    if raw == "-" {
+        return Some(balances);
+    }
+    for entry in raw.split(';') {
+        let (token_id, balance) = entry.split_once(':')?;
+        balances.insert(token_id.parse().ok()?, balance.parse().ok()?);
+    }
+    Some(balances)
+}
+
+fn encode_opt(value: Option<&str>) -> &str {
+    value.unwrap_or("-")
+}
+
+fn decode_opt(value: &str) -> Option<&str> {
+    if value == "-" { None } else { Some(value) }
+}
+
+fn encode_validator_state(state: ValidatorState) -> &'static str {
+    match state {
+        ValidatorState::Active => "active",
+        ValidatorState::PausedLowVault => "paused_low_vault",
+        ValidatorState::PunishedCooldown => "punished_cooldown",
+        ValidatorState::Inactive => "inactive",
+        ValidatorState::Jailed => "jailed",
+    }
+}
+
+fn decode_validator_state(value: &str) -> Option<ValidatorState> {
+    match value {
+        "active" => Some(ValidatorState::Active),
+        "paused_low_vault" => Some(ValidatorState::PausedLowVault),
+        "punished_cooldown" => Some(ValidatorState::PunishedCooldown),
+        "inactive" => Some(ValidatorState::Inactive),
+        "jailed" => Some(ValidatorState::Jailed),
+        _ => None,
+    }
+}
+
 pub(super) fn derive_epoch_seed(epoch_index: u64) -> [u8; 32] {
     let mut seed = GENESIS_EPOCH_SEED;
     for i in 1..=epoch_index {
@@ -103,6 +324,7 @@ pub(super) fn derive_epoch_seed(epoch_index: u64) -> [u8; 32] {
 }
 
 pub(super) fn normalize_address(input: &str) -> String {
+    // Internally addresses are lowercase so hash maps and comparisons remain deterministic.
     let s = input.trim();
     if s.starts_with("0x") || s.starts_with("0X") {
         format!("0x{}", s[2..].to_lowercase())
@@ -112,6 +334,7 @@ pub(super) fn normalize_address(input: &str) -> String {
 }
 
 pub(super) fn account_from_private_key_hex(id: &str, private_key_hex: &str) -> Option<Account> {
+    // Accounts derive Ethereum-style addresses from secp256k1 public keys for wallet compatibility testing.
     let raw = private_key_hex
         .strip_prefix("0x")
         .unwrap_or(private_key_hex);

@@ -6,6 +6,7 @@ pub const SLOT_MS: u64 = 3000;
 pub const LEADER_DEADLINE_MS: u64 = 2100;
 pub const SUB_EPOCH_SLOTS: u64 = 1200;
 pub const EPOCH_SUB_EPOCHS: u64 = 24;
+// Late validator blocks may correct provisional miss results while they are still visible in history.
 pub const FINALITY_WINDOW_SLOTS: u64 = 5;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -29,6 +30,7 @@ pub struct Config {
     pub p2p_port: u16,
     pub peers: Vec<SocketAddr>,
     pub rpc_port: u16,
+    // When set, validator mode attaches to an already registered validator instead of creating a bootstrap validator.
     pub validator_id: Option<String>,
     pub validator_account: Option<String>,
     pub genesis_path: String,
@@ -59,6 +61,7 @@ pub enum BlockKind {
 #[derive(Clone, Debug)]
 pub struct Validator {
     pub id: String,
+    // The account that pays validator system tx fees and owns vault/ticket operations.
     pub owner_account: Option<String>,
     pub validator_pubkey: Option<String>,
     pub reward_address: Option<String>,
@@ -94,6 +97,7 @@ pub struct Tx {
     pub fee_quarks: u64,
     pub max_fee_per_gas: u64,
     pub kind: &'static str,
+    // PBM transactions become executable only after this slot; normal mempool transactions use zero.
     pub valid_after_slot: u64,
     pub fee_token_id: u64,
     pub data: String,
@@ -131,11 +135,13 @@ pub struct ProtocolState {
     pub history: VecDeque<SlotResult>,
     pub events: VecDeque<String>,
     pub sync_pct: f64,
+    // Fee burns accumulated in the current sub-epoch; ticket burns are deliberately excluded from burn-offset.
     pub burn_this_sub_epoch: u128,
     pub fees_burned_total: u128,
     pub ticket_burned_total: u128,
     pub base_issuance_total: u128,
     pub burn_offset_total: u128,
+    // Period counters drive the TUI inflationary/deflationary indicators instead of all-time totals.
     pub sub_epoch_issued_quarks: u128,
     pub sub_epoch_burned_quarks: u128,
     pub epoch_issued_quarks: u128,
@@ -152,6 +158,7 @@ pub struct ProtocolState {
     pub nonce_tracker: HashMap<String, u64>,
     pub mode_local: NodeMode,
     pub local_validator_id: Option<String>,
+    // Legacy bootstrap validators get synthetic startup vault/ticket state; registered validators do not.
     pub local_validator_bootstrap: bool,
     pub accounts: HashMap<String, Account>,
     pub wallet_addresses: Vec<String>,
@@ -159,6 +166,7 @@ pub struct ProtocolState {
     pub bootstrapped_from_peer: bool,
     pub validator_peers: HashMap<String, SocketAddr>,
     pub remote_slot_results: BTreeMap<u64, SlotResult>,
+    // History sync is only a bootstrap aid; later peer history is treated as correction data.
     pub history_synced: bool,
     pub liveness_epoch: u64,
     pub liveness_counted_slots: BTreeSet<u64>,

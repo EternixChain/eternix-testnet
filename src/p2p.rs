@@ -57,7 +57,8 @@ impl P2p {
     pub fn recv_all(&mut self) -> Vec<(SocketAddr, String)> {
         let mut out = vec![];
         loop {
-            let mut buf = [0_u8; 2048];
+            // State snapshots can be much larger than tx gossip, so receive up to the UDP payload limit.
+            let mut buf = [0_u8; 65_507];
             match self.socket.recv_from(&mut buf) {
                 Ok((n, from)) => {
                     if let Ok(s) = std::str::from_utf8(&buf[..n]) {
@@ -77,6 +78,7 @@ impl P2p {
 
     pub fn broadcast_tx(&self, tx: &Tx) {
         let id = tx_id(tx);
+        // This prototype uses pipe-delimited UDP messages instead of a stable binary wire format.
         let msg = format!(
             "TX|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
             id,
@@ -198,6 +200,7 @@ pub fn parse_tx_msg(msg: &str) -> Option<(String, Tx)> {
 }
 
 pub fn tx_id(tx: &Tx) -> String {
+    // The hash includes data/signature so PBM ordering is deterministic for full transaction contents.
     let raw = format!(
         "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
         tx.chain_id,

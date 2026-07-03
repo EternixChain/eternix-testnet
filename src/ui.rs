@@ -247,6 +247,7 @@ fn render_rewards_panel(frame: &mut Frame, app: &Protocol, area: ratatui::layout
     };
     let projected_validator_blocks =
         (observed_validator_ratio * SUB_EPOCH_SLOTS as f64).round() as u64;
+    // Burn-offset display is projected from observed sub-epoch liveness; the actual mint happens at boundary.
     let est_offset_per_block = if projected_validator_blocks > 0 {
         st.burn_offset_k_permille as u128 * st.burn_this_sub_epoch
             / 1000
@@ -267,6 +268,7 @@ fn render_rewards_panel(frame: &mut Frame, app: &Protocol, area: ratatui::layout
         0
     };
     let total_supply = app.total_supply_quarks();
+    // Trend indicators use current period deltas so long-running all-time issuance cannot dominate forever.
     let sub_epoch_trend = supply_trend(st.sub_epoch_issued_quarks, st.sub_epoch_burned_quarks);
     let epoch_trend = supply_trend(st.epoch_issued_quarks, st.epoch_burned_quarks);
 
@@ -485,6 +487,7 @@ fn format_etx(quarks: u128) -> String {
 }
 
 fn format_signed_supply_change(issued_quarks: u128, burned_quarks: u128) -> String {
+    // Net supply can be negative, unlike account/vault balances that use the unsigned ETX formatter.
     if burned_quarks > issued_quarks {
         format!("-{}", format_etx(burned_quarks - issued_quarks))
     } else {
