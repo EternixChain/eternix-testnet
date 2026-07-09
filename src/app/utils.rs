@@ -107,6 +107,7 @@ pub(super) struct StateSnapshot {
     pub epoch_issued_quarks: u128,
     pub epoch_burned_quarks: u128,
     pub burn_this_sub_epoch: u128,
+    pub reward_unlocks: BTreeMap<u64, Vec<(String, u128)>>,
 }
 
 pub(super) fn encode_state_snapshot(state: &ProtocolState) -> String {
@@ -129,18 +130,24 @@ pub(super) fn encode_state_snapshot(state: &ProtocolState) -> String {
     ];
     for v in &state.validators {
         parts.push(format!(
-            "V,{},{},{},{},{},{},{},{}",
+            "V,{},{},{},{},{},{},{},{},{}",
             v.id,
             encode_opt(v.owner_account.as_deref()),
             encode_opt(v.validator_pubkey.as_deref()),
             encode_opt(v.reward_address.as_deref()),
             encode_validator_state(v.state),
             v.vault_quarks,
+            v.locked_reward_quarks,
             v.miss_counter,
             v.cooldown_until_epoch
                 .map(|x| x.to_string())
                 .unwrap_or_else(|| "-".to_string())
         ));
+    }
+    for (epoch, rewards) in &state.reward_unlocks {
+        for (validator_id, amount) in rewards {
+            parts.push(format!("U,{},{},{}", epoch, validator_id, amount));
+        }
     }
     for t in &state.tickets {
         parts.push(format!(
@@ -205,6 +212,7 @@ pub(super) fn parse_state_snapshot(msg: &str) -> Option<StateSnapshot> {
     let mut validators = Vec::new();
     let mut tickets = Vec::new();
     let mut accounts = Vec::new();
+    let mut reward_unlocks: BTreeMap<u64, Vec<(String, u128)>> = BTreeMap::new();
     for chunk in p.iter().skip(1) {
         let f: Vec<&str> = chunk.split(',').collect();
         match f.first().copied() {
@@ -220,18 +228,23 @@ pub(super) fn parse_state_snapshot(msg: &str) -> Option<StateSnapshot> {
                 epoch_burned_quarks = f[9].parse().ok()?;
                 burn_this_sub_epoch = f[10].parse().ok()?;
             }
-            Some("V") if f.len() == 9 => validators.push(Validator {
+            Some("V") if f.len() == 10 => validators.push(Validator {
                 id: f[1].to_string(),
                 owner_account: decode_opt(f[2]).map(normalize_address),
                 validator_pubkey: decode_opt(f[3]).map(str::to_string),
                 reward_address: decode_opt(f[4]).map(normalize_address),
                 state: decode_validator_state(f[5])?,
                 vault_quarks: f[6].parse().ok()?,
-                miss_counter: f[7].parse().ok()?,
+                locked_reward_quarks: f[7].parse().ok()?,
+                miss_counter: f[8].parse().ok()?,
                 double_sign_offenses: 0,
                 blocks_this_sub_epoch: 0,
-                cooldown_until_epoch: decode_opt(f[8]).and_then(|x| x.parse().ok()),
+                cooldown_until_epoch: decode_opt(f[9]).and_then(|x| x.parse().ok()),
             }),
+            Some("U") if f.len() == 4 => reward_unlocks
+                .entry(f[1].parse().ok()?)
+                .or_default()
+                .push((f[2].to_string(), f[3].parse().ok()?)),
             Some("T") if f.len() == 9 => tickets.push(Ticket {
                 id: f[1].parse().ok()?,
                 owner: f[2].to_string(),
@@ -267,6 +280,7 @@ pub(super) fn parse_state_snapshot(msg: &str) -> Option<StateSnapshot> {
         epoch_issued_quarks,
         epoch_burned_quarks,
         burn_this_sub_epoch,
+        reward_unlocks,
     })
 }
 

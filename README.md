@@ -128,6 +128,9 @@ Validator startup behavior for this prototype:
 - `register_validator` enqueues a fixed-fee transaction that creates an inactive validator with a sequential ID (`val-0001`, `val-0002`, ...).
 - `buy_ticket` takes `validator_id` and enqueues a fixed-fee transaction that burns ETX from the validator's configured owner account.
 - `wallet_to_vault` and `vault_to_wallet` take `validator_id` and enqueue signed transactions that move ETX between the validator's configured owner account and vault.
+- A validator with no tickets has a vault minimum of `0`; once it owns tickets, it is active only when its vault is at least `5 * ticket_cost + (ticket_cost / 2) * ticket_count`, where `ticket_count` is the number of non-dead tickets it owns.
+- `vault_to_wallet` is rejected if the withdrawal would leave the validator below that dynamic vault minimum.
+- Base block rewards and burn-offset rewards are credited to the validator vault immediately but remain locked until the start of `current_epoch + 4`; locked rewards count in vault balance but are not withdrawable.
 - Legacy bootstrap validators are auto-provisioned with:
   - 1 ticket
   - 50,000 ETX vault (stored in quarks internally)

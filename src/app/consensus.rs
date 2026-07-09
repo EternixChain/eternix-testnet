@@ -175,12 +175,7 @@ impl Protocol {
                     // Withdrawals keep the fee in the owner account path but move value out of validator vault.
                     if self.validator_owner_account(&tx.to).as_deref() != Some(tx.from.as_str())
                         || !self.can_pay_fee(&tx.from, TOKEN_ETX_ID, fee)
-                        || !self
-                            .state
-                            .validators
-                            .iter()
-                            .find(|v| v.id == tx.to)
-                            .is_some_and(|v| v.vault_quarks >= tx.value)
+                        || tx.value > self.validator_withdrawable_vault_quarks(&tx.to)
                     {
                         self.state.mempool.pop_front();
                         continue;
@@ -253,7 +248,15 @@ impl Protocol {
             if v.miss_counter > 0 {
                 v.miss_counter -= 1;
             }
-            v.vault_quarks = v.vault_quarks.saturating_add(base_reward);
+        }
+        if self
+            .state
+            .validators
+            .iter()
+            .any(|v| v.id == self.state.current_leader)
+        {
+            let leader = self.state.current_leader.clone();
+            self.lock_validator_reward(&leader, base_reward);
             self.state.base_issuance_total =
                 self.state.base_issuance_total.saturating_add(base_reward);
             self.state.sub_epoch_issued_quarks = self
@@ -474,12 +477,17 @@ impl Protocol {
             if produced > 0 {
                 let k = self.state.burn_offset_k_permille as u128;
                 let opb = k * self.state.burn_this_sub_epoch / 1000 / produced as u128;
-                for proposer in &self.state.blocks_this_sub_epoch {
-                    if let Some(pid) = proposer
-                        && let Some(v) = self.state.validators.iter_mut().find(|v| &v.id == pid)
-                    {
+                let proposers: Vec<String> = self
+                    .state
+                    .blocks_this_sub_epoch
+                    .iter()
+                    .flatten()
+                    .cloned()
+                    .collect();
+                for pid in proposers {
+                    if self.state.validators.iter().any(|v| v.id == pid) {
                         // Burn-offset is minted at sub-epoch close from fee burns only, not ticket burns.
-                        v.vault_quarks += opb;
+                        self.lock_validator_reward(&pid, opb);
                         self.state.burn_offset_total += opb;
                         self.state.epoch_issued_quarks =
                             self.state.epoch_issued_quarks.saturating_add(opb);
@@ -513,6 +521,7 @@ impl Protocol {
                 self.recompute_base_reward_per_block();
             }
             self.state.epoch_index = next_epoch;
+            self.unlock_rewards_for_epoch(next_epoch);
             self.state.epoch_issued_quarks = 0;
             self.state.epoch_burned_quarks = 0;
             self.finalize_retire_for_epoch(self.state.epoch_index);
@@ -550,7 +559,7 @@ impl Protocol {
         });
         self.record_block(&result);
         self.state.history.push_front(result);
-        if self.state.history.len() > 20 {
+        if self.state.history.len() > 50 {
             self.state.history.pop_back();
         }
         if replacing {
@@ -589,7 +598,7 @@ impl Protocol {
 
         let mut entries: Vec<SlotResult> = self.state.history.iter().cloned().collect();
         entries.sort_by_key(|e| std::cmp::Reverse(e.slot));
-        entries.truncate(20);
+        entries.truncate(50);
         self.state.history = std::collections::VecDeque::from(entries);
         self.rebuild_liveness_from_history();
         self.state.events.push_front(format!(
@@ -714,6 +723,12 @@ impl Protocol {
 
     pub(super) fn process_epoch_validator_transitions(&mut self) {
         let mut refresh_ids = Vec::new();
+        let vault_minimums: HashMap<String, u128> = self
+            .state
+            .validators
+            .iter()
+            .map(|v| (v.id.clone(), self.validator_vault_minimum_quarks(&v.id)))
+            .collect();
         for v in &mut self.state.validators {
             if v.state == ValidatorState::Jailed {
                 continue;
@@ -723,7 +738,8 @@ impl Protocol {
                 && self.state.epoch_index >= until
             {
                 v.cooldown_until_epoch = None;
-                if v.vault_quarks > 0 {
+                let vault_minimum = vault_minimums.get(&v.id).copied().unwrap_or(0);
+                if v.vault_quarks >= vault_minimum {
                     v.state = ValidatorState::Inactive;
                     refresh_ids.push(v.id.clone());
                 } else {

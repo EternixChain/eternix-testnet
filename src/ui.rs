@@ -91,6 +91,21 @@ fn render_validator_panel(frame: &mut Frame, app: &Protocol, area: ratatui::layo
         .and_then(|v| v.owner_account.as_deref())
         .unwrap_or("N/A");
     let vault = local.map(|v| v.vault_quarks).unwrap_or(0);
+    let vault_minimum = st
+        .local_validator_id
+        .as_deref()
+        .map(|id| app.validator_vault_minimum_quarks(id))
+        .unwrap_or(0);
+    let locked_rewards = st
+        .local_validator_id
+        .as_deref()
+        .map(|id| app.validator_locked_reward_quarks(id))
+        .unwrap_or(0);
+    let withdrawable_vault = st
+        .local_validator_id
+        .as_deref()
+        .map(|id| app.validator_withdrawable_vault_quarks(id))
+        .unwrap_or(0);
     let miss = local.map(|v| v.miss_counter).unwrap_or(0);
 
     let lines = vec![
@@ -101,6 +116,12 @@ fn render_validator_panel(frame: &mut Frame, app: &Protocol, area: ratatui::layo
         Line::from(format!("Ticket Share: {:.2}%", ticket_pct)),
         Line::from(format!("Retiring: {}", retiring_count)),
         Line::from(format!("Vault: {}", format_etx(vault))),
+        Line::from(format!("Vault Min: {}", format_etx(vault_minimum))),
+        Line::from(format!("Vault Locked: {}", format_etx(locked_rewards))),
+        Line::from(format!(
+            "Vault Withdrawable: {}",
+            format_etx(withdrawable_vault)
+        )),
         Line::from(format!("Miss Counter: {}", miss)),
         Line::from(format!("Next Chance: {:.2}%", ticket_pct)),
     ];
@@ -339,7 +360,8 @@ fn render_rewards_panel(frame: &mut Frame, app: &Protocol, area: ratatui::layout
 
 fn render_history_panel(frame: &mut Frame, app: &Protocol, area: ratatui::layout::Rect) {
     let st = &app.state;
-    let rows = st.history.iter().take(10).map(|h| {
+    let visible_rows = area.height.saturating_sub(3).min(50) as usize;
+    let rows = st.history.iter().take(visible_rows).map(|h| {
         let symbol = match h.kind {
             BlockKind::Validator => "✓",
             BlockKind::ProtocolMiss => "P(miss)",

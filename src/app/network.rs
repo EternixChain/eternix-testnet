@@ -7,7 +7,12 @@ impl Protocol {
         for (from, msg) in self.p2p.recv_all() {
             if let Some(hello) = parse_hello(&msg) {
                 // Hello messages double as lightweight discovery for validator identity and current slot timing.
-                self.p2p.add_peer(hello.addr);
+                let peer_addr = if hello.addr.ip().is_unspecified() {
+                    from
+                } else {
+                    hello.addr
+                };
+                self.p2p.add_peer(peer_addr);
                 self.learn_validator_from_hello(
                     &hello.mode,
                     hello.validator_id.as_deref(),
@@ -15,14 +20,16 @@ impl Protocol {
                     hello.validator_bootstrap,
                 );
                 if let Some(vid) = hello.validator_id {
-                    self.state.validator_peers.insert(vid, hello.addr);
+                    self.state.validator_peers.insert(vid, peer_addr);
                 }
                 // Send both history and state because late-start validator nodes need executed vault/ticket state.
                 let snap = encode_history_snapshot(&self.state);
-                self.p2p.send_to(&snap, hello.addr);
+                self.p2p.send_to(&snap, peer_addr);
                 let state_snap = encode_state_snapshot(&self.state);
-                self.p2p.send_to(&state_snap, hello.addr);
-                if !self.state.bootstrapped_from_peer {
+                self.p2p.send_to(&state_snap, peer_addr);
+                if !self.state.bootstrapped_from_peer
+                    && matches!(hello.mode.as_str(), "standard" | "validator")
+                {
                     self.bootstrap_slot_from_peer(hello.slot, hello.slot_started_unix_ms);
                 }
                 continue;
@@ -110,26 +117,30 @@ impl Protocol {
     }
 
     pub(super) fn bootstrap_slot_from_peer(&mut self, slot: u64, slot_started_unix_ms: u128) {
+        if slot_started_unix_ms == 0 {
+            return;
+        }
         let now = unix_ms_now();
-        if now < slot_started_unix_ms {
+        let elapsed = now.saturating_sub(slot_started_unix_ms);
+        let elapsed_slots = (elapsed / SLOT_MS as u128) as u64;
+        let slot_elapsed_ms = (elapsed % SLOT_MS as u128) as u64;
+        let target_slot = slot.saturating_add(elapsed_slots);
+        if target_slot <= self.state.slot {
             return;
         }
-        let elapsed = now - slot_started_unix_ms;
-        if elapsed > SLOT_MS as u128 {
-            return;
-        }
-        self.state.slot = slot;
+        self.state.slot = target_slot;
         // The wall-clock anchor lets the node catch up to peer slot numbers without persisting local time state.
-        self.state.epoch_index = slot / (SUB_EPOCH_SLOTS * EPOCH_SUB_EPOCHS);
-        self.state.sub_epoch_index = slot / SUB_EPOCH_SLOTS;
+        self.state.epoch_index = target_slot / (SUB_EPOCH_SLOTS * EPOCH_SUB_EPOCHS);
+        self.state.sub_epoch_index = target_slot / SUB_EPOCH_SLOTS;
         self.state.epoch_seed = derive_epoch_seed(self.state.epoch_index);
-        self.state.slot_started = Instant::now() - Duration::from_millis(elapsed as u64);
+        self.state.slot_started = Instant::now() - Duration::from_millis(slot_elapsed_ms);
         self.state.anchor_time = UNIX_EPOCH + Duration::from_millis(slot_started_unix_ms as u64)
             - Duration::from_millis(slot.saturating_mul(SLOT_MS));
+        self.state.current_leader = self.select_leader();
         self.state.bootstrapped_from_peer = true;
         self.state
             .events
-            .push_front(format!("bootstrapped slot from peer: {}", slot));
+            .push_front(format!("bootstrapped slot from peer: {}", target_slot));
         let hello = self.hello_payload();
         self.p2p.send_hello_now(&hello);
     }
@@ -193,6 +204,7 @@ impl Protocol {
             } else {
                 0
             },
+            locked_reward_quarks: 0,
             miss_counter: 0,
             double_sign_offenses: 0,
             blocks_this_sub_epoch: 0,
@@ -262,6 +274,7 @@ impl Protocol {
             self.state.epoch_issued_quarks = snapshot.epoch_issued_quarks;
             self.state.epoch_burned_quarks = snapshot.epoch_burned_quarks;
             self.state.burn_this_sub_epoch = snapshot.burn_this_sub_epoch;
+            self.state.reward_unlocks = snapshot.reward_unlocks.clone();
         }
 
         for incoming in snapshot.validators {
@@ -284,6 +297,9 @@ impl Protocol {
                     // Vault sync is monotonic for the current testnet flow; withdrawals are executed locally via txs.
                     local.vault_quarks = incoming.vault_quarks;
                     changed = true;
+                }
+                if apply_economy {
+                    local.locked_reward_quarks = incoming.locked_reward_quarks;
                 }
             } else {
                 self.state.validators.push(incoming);
@@ -326,9 +342,6 @@ impl Protocol {
                 self.refresh_validator_activation(&id);
             }
             self.state.current_leader = self.select_leader();
-            self.state
-                .events
-                .push_front("state synced from peer".to_string());
         }
     }
 

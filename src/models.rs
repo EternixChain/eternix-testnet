@@ -67,6 +67,8 @@ pub struct Validator {
     pub reward_address: Option<String>,
     pub state: ValidatorState,
     pub vault_quarks: u128,
+    // Rewards are part of vault balance immediately but cannot be withdrawn until their unlock epoch.
+    pub locked_reward_quarks: u128,
     pub miss_counter: u32,
     pub double_sign_offenses: u32,
     pub blocks_this_sub_epoch: u32,
@@ -179,6 +181,7 @@ pub struct ProtocolState {
     pub retire_per_epoch_limit: u64,
     pub retire_schedule: BTreeMap<u64, Vec<u64>>,
     pub retire_finalize: BTreeMap<u64, Vec<u64>>,
+    pub reward_unlocks: BTreeMap<u64, Vec<(String, u128)>>,
     pub raw_txs: HashMap<String, RawTxRecord>,
     pub raw_tx_pending: VecDeque<String>,
     pub block_transactions: HashMap<u64, Vec<String>>,

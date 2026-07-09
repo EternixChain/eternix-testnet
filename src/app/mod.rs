@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
@@ -24,6 +24,7 @@ const INITIAL_VALIDATOR_VAULT_QUARKS: u128 = 500_000_000_000_000;
 const INFLATION_RATE_DENOMINATOR: u128 = 1_000_000_000;
 const EPOCHS_PER_YEAR: u64 = 365;
 const SLOTS_PER_YEAR: u128 = 365 * 24 * 60 * 60 / (SLOT_MS as u128 / 1000);
+const REWARD_UNLOCK_DELAY_EPOCHS: u64 = 4;
 const PBM_VALID_AFTER_SLOTS: u64 = 20;
 const PBM_PENDING_PER_ACCOUNT_LIMIT: usize = 3;
 const WEI_PER_QUARK: u64 = 100_000_000;

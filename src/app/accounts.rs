@@ -23,6 +23,85 @@ impl Protocol {
         self.state.base_reward_per_block_quarks
     }
 
+    pub fn validator_vault_minimum_quarks(&self, validator_id: &str) -> u128 {
+        // Validators with no tickets can fully withdraw; ticketed validators need base plus per-ticket backing.
+        let ticket_count = self.validator_ticket_count(validator_id);
+        if ticket_count == 0 {
+            return 0;
+        }
+        TICKET_COST_QUARKS.saturating_mul(5).saturating_add(
+            TICKET_COST_QUARKS
+                .saturating_div(2)
+                .saturating_mul(ticket_count as u128),
+        )
+    }
+
+    pub fn validator_ticket_count(&self, validator_id: &str) -> usize {
+        self.state
+            .tickets
+            .iter()
+            .filter(|t| t.owner == validator_id && !t.dead)
+            .count()
+    }
+
+    pub fn validator_locked_reward_quarks(&self, validator_id: &str) -> u128 {
+        self.state
+            .validators
+            .iter()
+            .find(|v| v.id == validator_id)
+            .map(|v| v.locked_reward_quarks)
+            .unwrap_or(0)
+    }
+
+    pub fn validator_withdrawable_vault_quarks(&self, validator_id: &str) -> u128 {
+        let Some(v) = self.state.validators.iter().find(|v| v.id == validator_id) else {
+            return 0;
+        };
+        // Locked rewards do not increase withdrawable balance, even though they are part of vault total.
+        let unlocked = v.vault_quarks.saturating_sub(v.locked_reward_quarks);
+        unlocked.saturating_sub(self.validator_vault_minimum_quarks(validator_id))
+    }
+
+    pub(super) fn lock_validator_reward(&mut self, validator_id: &str, amount: u128) {
+        if amount == 0 {
+            return;
+        }
+        if let Some(v) = self
+            .state
+            .validators
+            .iter_mut()
+            .find(|v| v.id == validator_id)
+        {
+            v.vault_quarks = v.vault_quarks.saturating_add(amount);
+            v.locked_reward_quarks = v.locked_reward_quarks.saturating_add(amount);
+            let unlock_epoch = self
+                .state
+                .epoch_index
+                .saturating_add(REWARD_UNLOCK_DELAY_EPOCHS);
+            self.state
+                .reward_unlocks
+                .entry(unlock_epoch)
+                .or_default()
+                .push((validator_id.to_string(), amount));
+        }
+    }
+
+    pub(super) fn unlock_rewards_for_epoch(&mut self, epoch: u64) {
+        let Some(rewards) = self.state.reward_unlocks.remove(&epoch) else {
+            return;
+        };
+        for (validator_id, amount) in rewards {
+            if let Some(v) = self
+                .state
+                .validators
+                .iter_mut()
+                .find(|v| v.id == validator_id)
+            {
+                v.locked_reward_quarks = v.locked_reward_quarks.saturating_sub(amount);
+            }
+        }
+    }
+
     pub(super) fn recompute_base_reward_per_block(&mut self) {
         // Block rewards are fixed inside an inflation period and recomputed at configured decay boundaries.
         self.state.base_reward_per_block_quarks = self
@@ -204,6 +283,7 @@ impl Protocol {
             reward_address: Some(normalize_address(&reward_address)),
             state: ValidatorState::Inactive,
             vault_quarks: 0,
+            locked_reward_quarks: 0,
             miss_counter: 0,
             double_sign_offenses: 0,
             blocks_this_sub_epoch: 0,
@@ -214,6 +294,7 @@ impl Protocol {
 
     pub(super) fn refresh_validator_activation(&mut self, validator_id: &str) {
         // Activation is bidirectional: gaining vault/tickets promotes, losing either demotes if not jailed/cooling down.
+        let vault_minimum = self.validator_vault_minimum_quarks(validator_id);
         let active_tickets = self
             .state
             .tickets
@@ -231,7 +312,7 @@ impl Protocol {
             ) {
                 return;
             }
-            if v.vault_quarks == 0 {
+            if v.vault_quarks < vault_minimum {
                 if v.state == ValidatorState::Active {
                     v.state = ValidatorState::PausedLowVault;
                 }
@@ -328,6 +409,7 @@ impl Protocol {
                 reward_address: None,
                 state: ValidatorState::Active,
                 vault_quarks: 0,
+                locked_reward_quarks: 0,
                 miss_counter: 0,
                 double_sign_offenses: 0,
                 blocks_this_sub_epoch: 0,

@@ -36,6 +36,7 @@ impl Protocol {
                 } else {
                     0
                 },
+                locked_reward_quarks: 0,
                 miss_counter: 0,
                 double_sign_offenses: 0,
                 blocks_this_sub_epoch: 0,
@@ -108,6 +109,7 @@ impl Protocol {
                 retire_per_epoch_limit: 2,
                 retire_schedule: Default::default(),
                 retire_finalize: Default::default(),
+                reward_unlocks: Default::default(),
                 raw_txs: HashMap::new(),
                 raw_tx_pending: Default::default(),
                 block_transactions: HashMap::new(),
@@ -256,15 +258,18 @@ impl Protocol {
         if !self.can_pay_fee(&owner_account, TOKEN_ETX_ID, required_owner_balance) {
             return json!({"ok": false, "error": "insufficient validator account balance"});
         }
-        if kind == "vaultToWallet"
-            && !self
-                .state
-                .validators
-                .iter()
-                .find(|v| v.id == validator_id)
-                .is_some_and(|v| v.vault_quarks >= value)
-        {
-            return json!({"ok": false, "error": "insufficient vault balance"});
+        if kind == "vaultToWallet" {
+            let vault_minimum = self.validator_vault_minimum_quarks(validator_id);
+            let can_withdraw = value <= self.validator_withdrawable_vault_quarks(validator_id);
+            if !can_withdraw {
+                return json!({
+                    "ok": false,
+                    "error": "withdrawal exceeds unlocked vault balance or would leave vault below minimum",
+                    "vault_minimum_quarks": vault_minimum,
+                    "locked_reward_quarks": self.validator_locked_reward_quarks(validator_id),
+                    "withdrawable_quarks": self.validator_withdrawable_vault_quarks(validator_id)
+                });
+            }
         }
 
         let sig = match signature_hex {
