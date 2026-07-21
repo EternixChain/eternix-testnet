@@ -7,7 +7,7 @@ pub const LEADER_DEADLINE_MS: u64 = 2100;
 pub const SUB_EPOCH_SLOTS: u64 = 1200;
 pub const EPOCH_SUB_EPOCHS: u64 = 24;
 // Late validator blocks may correct provisional miss results while they are still visible in history.
-pub const FINALITY_WINDOW_SLOTS: u64 = 5;
+pub const FINALITY_WINDOW_SLOTS: u64 = 20;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ValidatorState {

@@ -128,6 +128,7 @@ Validator startup behavior for this prototype:
 - `register_validator` enqueues a fixed-fee transaction that creates an inactive validator with a sequential ID (`val-0001`, `val-0002`, ...).
 - `buy_ticket` takes `validator_id` and enqueues a fixed-fee transaction that burns ETX from the validator's configured owner account.
 - `wallet_to_vault` and `vault_to_wallet` take `validator_id` and enqueue signed transactions that move ETX between the validator's configured owner account and vault.
+- Validator system transactions use `1000` gas at `10` quarks per gas, for a fixed fee of `10000` quarks.
 - A validator with no tickets has a vault minimum of `0`; once it owns tickets, it is active only when its vault is at least `5 * ticket_cost + (ticket_cost / 2) * ticket_count`, where `ticket_count` is the number of non-dead tickets it owns.
 - `vault_to_wallet` is rejected if the withdrawal would leave the validator below that dynamic vault minimum.
 - Base block rewards and burn-offset rewards are credited to the validator vault immediately but remain locked until the start of `current_epoch + 4`; locked rewards count in vault balance but are not withdrawable.
@@ -208,6 +209,8 @@ Supported methods:
 - `wallet_to_vault` `{ validator_id, amount_quarks, nonce?, signature? }` (gas limit and fee are fixed)
 - `vault_to_wallet` `{ validator_id, amount_quarks, nonce?, signature? }` (gas limit and fee are fixed)
 - `get_account` `{ account_id }`
+
+For non-Ethereum JSON RPC methods, `max_fee_per_gas` is denominated in quarks per gas. For example, `gas_limit: 1000` and `max_fee_per_gas: 10` costs `10000` quarks.
 
 Example:
 

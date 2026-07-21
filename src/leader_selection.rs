@@ -1,8 +1,8 @@
-use std::collections::HashMap;
-
 use sha2::{Digest, Sha256};
 
 use crate::models::Ticket;
+
+const BUCKET_SELECTION_DOMAIN: &[u8] = b"eternix:bucket-selection:v1";
 
 fn hash_bytes(data: &[u8]) -> [u8; 32] {
     let mut hasher = Sha256::new();
@@ -17,36 +17,45 @@ pub fn slot_seed(epoch_seed: [u8; 32], slot_index: u64) -> [u8; 32] {
     hash_bytes(&data)
 }
 
-fn select_bucket(seed: [u8; 32], bucket_counts: &HashMap<u8, usize>) -> Option<u8> {
-    let mut best_bucket: Option<u8> = None;
-    let mut best_score: Option<u128> = None;
-
-    for (&bucket_id, &count) in bucket_counts {
-        if count == 0 {
-            continue;
-        }
-        let mut data = Vec::new();
-        data.extend_from_slice(&seed);
-        data.extend_from_slice(&(bucket_id as u64).to_be_bytes());
-        let hash = hash_bytes(&data);
-        let raw = u128::from_be_bytes(hash[0..16].try_into().ok()?);
-        let score = raw / count as u128;
-
-        match best_score {
-            None => {
-                best_bucket = Some(bucket_id);
-                best_score = Some(score);
-            }
-            Some(current) => {
-                if (score, bucket_id) < (current, best_bucket.unwrap_or(bucket_id)) {
-                    best_bucket = Some(bucket_id);
-                    best_score = Some(score);
-                }
-            }
-        }
+fn uniform_below(seed: [u8; 32], upper_bound: u64) -> Option<u64> {
+    if upper_bound == 0 {
+        return None;
     }
 
-    best_bucket
+    let threshold = upper_bound.wrapping_neg() % upper_bound;
+    let mut retry = 0_u64;
+    loop {
+        let mut hasher = Sha256::new();
+        hasher.update(BUCKET_SELECTION_DOMAIN);
+        hasher.update(seed);
+        hasher.update(retry.to_be_bytes());
+        let hash = hasher.finalize();
+        // The first eight SHA-256 bytes form the uniform source value in big-endian order.
+        let raw = u64::from_be_bytes(hash[..8].try_into().ok()?);
+        if raw >= threshold {
+            return Some(raw % upper_bound);
+        }
+        retry = retry.checked_add(1)?;
+    }
+}
+
+fn bucket_for_offset(bucket_counts: &[u64; 256], mut offset: u64) -> Option<u8> {
+    for bucket_id in 2u16..=255 {
+        let count = bucket_counts[bucket_id as usize];
+        if offset < count {
+            return Some(bucket_id as u8);
+        }
+        offset = offset.checked_sub(count)?;
+    }
+    None
+}
+
+fn select_bucket(seed: [u8; 32], bucket_counts: &[u64; 256]) -> Option<u8> {
+    let total_active = (2u16..=255).try_fold(0_u64, |total, bucket_id| {
+        total.checked_add(bucket_counts[bucket_id as usize])
+    })?;
+    let offset = uniform_below(seed, total_active)?;
+    bucket_for_offset(bucket_counts, offset)
 }
 
 fn select_ticket(seed: [u8; 32], ticket_ids: &[u64]) -> Option<u64> {
@@ -87,9 +96,13 @@ pub fn select_leader_owner(
 
     let seed = slot_seed(epoch_seed, slot_index);
 
-    let mut bucket_counts: HashMap<u8, usize> = HashMap::new();
+    let mut bucket_counts = [0u64; 256];
     for t in eligible_tickets {
-        *bucket_counts.entry(t.bucket).or_insert(0) += 1;
+        if t.bucket < 2 {
+            continue;
+        }
+        let count = &mut bucket_counts[t.bucket as usize];
+        *count = count.checked_add(1)?;
     }
 
     let chosen_bucket = select_bucket(seed, &bucket_counts)?;
@@ -104,4 +117,71 @@ pub fn select_leader_owner(
         .iter()
         .find(|t| t.id == winner_ticket_id)
         .map(|t| t.owner.clone())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn no_tickets_returns_none() {
+        assert_eq!(select_leader_owner([0; 32], 0, &[]), None);
+    }
+
+    #[test]
+    fn dead_and_muted_buckets_are_never_selected() {
+        let mut counts = [0u64; 256];
+        counts[0] = u64::MAX;
+        counts[1] = u64::MAX;
+        assert_eq!(select_bucket([1; 32], &counts), None);
+
+        counts[2] = 1;
+
+        assert_eq!(select_bucket([1; 32], &counts), Some(2));
+    }
+
+    #[test]
+    fn active_ticket_count_overflow_returns_none() {
+        let mut counts = [0u64; 256];
+        counts[2] = u64::MAX;
+        counts[3] = 1;
+
+        assert_eq!(select_bucket([1; 32], &counts), None);
+    }
+
+    #[test]
+    fn single_populated_active_bucket_is_always_selected() {
+        let mut counts = [0u64; 256];
+        counts[255] = 17;
+
+        for slot in 0..32 {
+            assert_eq!(select_bucket(slot_seed([2; 32], slot), &counts), Some(255));
+        }
+    }
+
+    #[test]
+    fn cumulative_offsets_map_to_exact_bucket_ranges() {
+        let mut counts = [0u64; 256];
+        counts[2] = 1;
+        counts[3] = 2;
+        counts[255] = 1;
+
+        assert_eq!(bucket_for_offset(&counts, 0), Some(2));
+        assert_eq!(bucket_for_offset(&counts, 1), Some(3));
+        assert_eq!(bucket_for_offset(&counts, 2), Some(3));
+        assert_eq!(bucket_for_offset(&counts, 3), Some(255));
+        assert_eq!(bucket_for_offset(&counts, 4), None);
+    }
+
+    #[test]
+    fn uniform_below_stays_within_representative_bounds() {
+        let bounds = [1, 2, 3, 10, 255, 256, u32::MAX as u64, u64::MAX];
+        for upper_bound in bounds {
+            for slot in 0..32 {
+                let value = uniform_below(slot_seed([3; 32], slot), upper_bound).unwrap();
+                assert!(value < upper_bound);
+            }
+        }
+        assert_eq!(uniform_below([0; 32], 0), None);
+    }
 }

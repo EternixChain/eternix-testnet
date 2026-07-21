@@ -245,7 +245,7 @@ impl Protocol {
 
         let gas_limit = 1000_u64;
         let max_fee_per_gas = 10_u64;
-        let fee_quarks = gas_limit.saturating_mul(max_fee_per_gas_to_quarks(max_fee_per_gas));
+        let fee_quarks = gas_limit.saturating_mul(max_fee_per_gas);
 
         // Fixed-fee validator system txs make vault/ticket flows predictable during PBM bootstrap.
         let required_owner_balance = match kind {
@@ -385,7 +385,7 @@ impl Protocol {
 
         let gas_limit = 1000_u64;
         let max_fee_per_gas = 10_u64;
-        let fee_quarks = gas_limit.saturating_mul(max_fee_per_gas_to_quarks(max_fee_per_gas));
+        let fee_quarks = gas_limit.saturating_mul(max_fee_per_gas);
         if !self.can_pay_fee(&from, TOKEN_ETX_ID, fee_quarks as u128) {
             return json!({"ok": false, "error": "insufficient account balance"});
         }
@@ -566,8 +566,7 @@ impl Protocol {
                 self.state
                     .nonce_tracker
                     .insert(from.clone(), nonce.saturating_add(1));
-                let fee_per_gas_quarks = max_fee_per_gas_to_quarks(max_fee_per_gas);
-                let fee_quarks = gas_limit.saturating_mul(fee_per_gas_quarks);
+                let fee_quarks = gas_limit.saturating_mul(max_fee_per_gas);
                 let tx = Tx {
                     chain_id,
                     from,
