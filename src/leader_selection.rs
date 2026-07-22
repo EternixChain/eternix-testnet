@@ -2,19 +2,21 @@ use sha2::{Digest, Sha256};
 
 use crate::models::Ticket;
 
+const LEADER_SELECTION_DOMAIN: &[u8] = b"eternix:leader-selection:v1";
 const BUCKET_SELECTION_DOMAIN: &[u8] = b"eternix:bucket-selection:v1";
+const TICKET_SELECTION_DOMAIN: &[u8] = b"eternix:ticket-selection:v1";
+pub const BLOCK_HASH_LOOKBACK_SLOTS: u64 = 32;
 
-fn hash_bytes(data: &[u8]) -> [u8; 32] {
-    let mut hasher = Sha256::new();
-    hasher.update(data);
-    hasher.finalize().into()
+pub fn historical_block_slot(slot_index: u64) -> u64 {
+    slot_index.saturating_sub(BLOCK_HASH_LOOKBACK_SLOTS)
 }
 
-pub fn slot_seed(epoch_seed: [u8; 32], slot_index: u64) -> [u8; 32] {
-    let mut data = Vec::new();
-    data.extend_from_slice(&epoch_seed);
-    data.extend_from_slice(&slot_index.to_be_bytes());
-    hash_bytes(&data)
+pub fn slot_randomness(historical_block_hash: [u8; 32], slot_index: u64) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(LEADER_SELECTION_DOMAIN);
+    hasher.update(historical_block_hash);
+    hasher.update(slot_index.to_be_bytes());
+    hasher.finalize().into()
 }
 
 fn uniform_below(seed: [u8; 32], upper_bound: u64) -> Option<u64> {
@@ -58,15 +60,20 @@ fn select_bucket(seed: [u8; 32], bucket_counts: &[u64; 256]) -> Option<u8> {
     bucket_for_offset(bucket_counts, offset)
 }
 
+fn ticket_score(seed: [u8; 32], ticket_id: u64) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(TICKET_SELECTION_DOMAIN);
+    hasher.update(seed);
+    hasher.update(ticket_id.to_be_bytes());
+    hasher.finalize().into()
+}
+
 fn select_ticket(seed: [u8; 32], ticket_ids: &[u64]) -> Option<u64> {
     let mut best_ticket: Option<u64> = None;
     let mut best_score: Option<[u8; 32]> = None;
 
     for &ticket_id in ticket_ids {
-        let mut data = Vec::new();
-        data.extend_from_slice(&seed);
-        data.extend_from_slice(&ticket_id.to_be_bytes());
-        let hash = hash_bytes(&data);
+        let hash = ticket_score(seed, ticket_id);
 
         match best_score {
             None => {
@@ -86,7 +93,7 @@ fn select_ticket(seed: [u8; 32], ticket_ids: &[u64]) -> Option<u64> {
 }
 
 pub fn select_leader_owner(
-    epoch_seed: [u8; 32],
+    historical_block_hash: [u8; 32],
     slot_index: u64,
     eligible_tickets: &[&Ticket],
 ) -> Option<String> {
@@ -94,7 +101,7 @@ pub fn select_leader_owner(
         return None;
     }
 
-    let seed = slot_seed(epoch_seed, slot_index);
+    let seed = slot_randomness(historical_block_hash, slot_index);
 
     let mut bucket_counts = [0u64; 256];
     for t in eligible_tickets {
@@ -129,6 +136,35 @@ mod tests {
     }
 
     #[test]
+    fn historical_block_slot_uses_genesis_before_lookback() {
+        assert_eq!(historical_block_slot(0), 0);
+        assert_eq!(historical_block_slot(31), 0);
+        assert_eq!(historical_block_slot(32), 0);
+        assert_eq!(historical_block_slot(33), 1);
+    }
+
+    #[test]
+    fn slot_randomness_depends_on_block_hash_and_slot() {
+        let base = slot_randomness([4; 32], 42);
+        assert_eq!(base, slot_randomness([4; 32], 42));
+        assert_ne!(base, slot_randomness([5; 32], 42));
+        assert_ne!(base, slot_randomness([4; 32], 43));
+    }
+
+    #[test]
+    fn bucket_and_ticket_hashes_are_domain_separated() {
+        let base = slot_randomness([6; 32], 42);
+        let mut bucket_hasher = Sha256::new();
+        bucket_hasher.update(BUCKET_SELECTION_DOMAIN);
+        bucket_hasher.update(base);
+        bucket_hasher.update(0_u64.to_be_bytes());
+        let bucket_hash: [u8; 32] = bucket_hasher.finalize().into();
+
+        assert_ne!(bucket_hash, ticket_score(base, 0));
+        assert_ne!(ticket_score(base, 0), ticket_score(base, 1));
+    }
+
+    #[test]
     fn dead_and_muted_buckets_are_never_selected() {
         let mut counts = [0u64; 256];
         counts[0] = u64::MAX;
@@ -155,7 +191,10 @@ mod tests {
         counts[255] = 17;
 
         for slot in 0..32 {
-            assert_eq!(select_bucket(slot_seed([2; 32], slot), &counts), Some(255));
+            assert_eq!(
+                select_bucket(slot_randomness([2; 32], slot), &counts),
+                Some(255)
+            );
         }
     }
 
@@ -178,7 +217,7 @@ mod tests {
         let bounds = [1, 2, 3, 10, 255, 256, u32::MAX as u64, u64::MAX];
         for upper_bound in bounds {
             for slot in 0..32 {
-                let value = uniform_below(slot_seed([3; 32], slot), upper_bound).unwrap();
+                let value = uniform_below(slot_randomness([3; 32], slot), upper_bound).unwrap();
                 assert!(value < upper_bound);
             }
         }

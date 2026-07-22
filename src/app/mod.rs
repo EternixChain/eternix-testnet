@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use sha3::Keccak256;
 
-use crate::leader_selection::select_leader_owner;
+use crate::leader_selection::{historical_block_slot, select_leader_owner};
 use crate::models::*;
 use crate::p2p::{P2p, encode_slot_result, parse_hello, parse_slot_result, parse_tx_msg, tx_id};
 use crate::rpc::RpcRequest;

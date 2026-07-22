@@ -63,6 +63,17 @@ impl Protocol {
             .any(|v| v.id == id && v.state == ValidatorState::Active)
     }
 
+    pub(super) fn leader_selection_block_hash(&self, slot_index: u64) -> Option<[u8; 32]> {
+        if slot_index < crate::leader_selection::BLOCK_HASH_LOOKBACK_SLOTS {
+            return Some(block_hash_bytes(0));
+        }
+        let block_number = historical_block_slot(slot_index);
+        self.state
+            .blocks
+            .get(&block_number)
+            .and_then(|block| decode_block_hash(&block.hash))
+    }
+
     pub(super) fn select_leader(&mut self) -> String {
         let eligible: Vec<&Ticket> = self
             .state
@@ -70,7 +81,10 @@ impl Protocol {
             .iter()
             .filter(|t| !t.dead && !t.muted && self.validator_active(&t.owner))
             .collect();
-        select_leader_owner(self.state.epoch_seed, self.state.slot, &eligible)
+        let Some(historical_block_hash) = self.leader_selection_block_hash(self.state.slot) else {
+            return "protocol".to_string();
+        };
+        select_leader_owner(historical_block_hash, self.state.slot, &eligible)
             .unwrap_or_else(|| "protocol".to_string())
     }
 
@@ -273,7 +287,7 @@ impl Protocol {
             rec.block_number = Some(self.state.slot);
             rec.block_hash = Some(format!(
                 "0x{}",
-                hex::encode(hash_bytes(format!("block:{}", self.state.slot).as_bytes()))
+                hex::encode(block_hash_bytes(self.state.slot))
             ));
             rec.tx_index = Some(0);
             rec.success = Some(true);
@@ -638,17 +652,11 @@ impl Protocol {
 
     pub(super) fn record_block(&mut self, result: &SlotResult) {
         let number = result.slot;
-        let hash = format!(
-            "0x{}",
-            hex::encode(hash_bytes(format!("block:{}", number).as_bytes()))
-        );
+        let hash = format!("0x{}", hex::encode(block_hash_bytes(number)));
         let parent_hash = if number == 0 {
             "0x0000000000000000000000000000000000000000000000000000000000000000".to_string()
         } else {
-            format!(
-                "0x{}",
-                hex::encode(hash_bytes(format!("block:{}", number - 1).as_bytes()))
-            )
+            format!("0x{}", hex::encode(block_hash_bytes(number - 1)))
         };
         let timestamp_ms = unix_ms_now() as u64;
         let tx_hashes = self

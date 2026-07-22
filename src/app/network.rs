@@ -44,9 +44,11 @@ impl Protocol {
                     self.state.history.clear();
                     entries.sort_by_key(|e| std::cmp::Reverse(e.slot));
                     for e in entries.into_iter().take(64) {
+                        self.record_block(&e);
                         self.state.history.push_back(e);
                     }
                     self.rebuild_liveness_from_history();
+                    self.state.current_leader = self.select_leader();
                     self.state.history_synced = true;
                     self.state
                         .events
@@ -362,15 +364,17 @@ impl Protocol {
         let expected_leader = if result.slot == self.state.slot {
             self.state.current_leader.clone()
         } else {
-            // Validate past/future results against the seed for the slot being reported, not the current slot.
-            let epoch_seed = derive_epoch_seed(result.slot / (SUB_EPOCH_SLOTS * EPOCH_SUB_EPOCHS));
+            // Validate past/future results with the same historical block hash used for that slot.
             let eligible: Vec<&Ticket> = self
                 .state
                 .tickets
                 .iter()
                 .filter(|t| !t.dead && !t.muted && self.validator_active(&t.owner))
                 .collect();
-            select_leader_owner(epoch_seed, result.slot, &eligible)
+            let Some(historical_block_hash) = self.leader_selection_block_hash(result.slot) else {
+                return false;
+            };
+            select_leader_owner(historical_block_hash, result.slot, &eligible)
                 .unwrap_or_else(|| "protocol".to_string())
         };
         if self.state.local_validator_id.as_deref() == Some(expected_leader.as_str())

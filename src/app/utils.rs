@@ -9,6 +9,16 @@ pub(super) fn hash_bytes(input: &[u8]) -> [u8; 32] {
     arr
 }
 
+pub(super) fn block_hash_bytes(block_number: u64) -> [u8; 32] {
+    // Block hashes are currently synthetic but centralized so consensus and RPC use identical bytes.
+    hash_bytes(format!("block:{}", block_number).as_bytes())
+}
+
+pub(super) fn decode_block_hash(hash: &str) -> Option<[u8; 32]> {
+    let bytes = hex::decode(hash.strip_prefix("0x").unwrap_or(hash)).ok()?;
+    bytes.try_into().ok()
+}
+
 pub(super) fn deterministic_ticket_id(validator_id: &str) -> u64 {
     // Discovered legacy validators need stable synthetic ticket IDs across peers.
     let h = hash_bytes(validator_id.as_bytes());
