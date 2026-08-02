@@ -34,6 +34,7 @@ pub struct Config {
     pub validator_id: Option<String>,
     pub validator_account: Option<String>,
     pub genesis_path: String,
+    pub no_tui: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

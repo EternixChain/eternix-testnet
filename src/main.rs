@@ -7,6 +7,8 @@ mod rpc;
 mod ui;
 
 use std::io;
+use std::sync::mpsc::Receiver;
+use std::thread;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -19,13 +21,24 @@ use ratatui::DefaultTerminal;
 
 use crate::app::Protocol;
 use crate::config::parse_args;
-use crate::rpc::start_rpc_server;
+use crate::rpc::{RpcEnvelope, start_rpc_server};
 
 fn main() -> Result<()> {
     let cfg = parse_args()?;
-    let mut terminal = init_terminal()?;
+    let no_tui = cfg.no_tui;
     let rpc_rx = start_rpc_server(cfg.rpc_port);
-    let mut app = Protocol::new(cfg)?;
+    let app = Protocol::new(cfg)?;
+
+    if no_tui {
+        eprintln!("Eternix node running without TUI; stop with Ctrl+C");
+        run_headless(app, rpc_rx)
+    } else {
+        run_tui(app, rpc_rx)
+    }
+}
+
+fn run_tui(mut app: Protocol, rpc_rx: Receiver<RpcEnvelope>) -> Result<()> {
+    let mut terminal = init_terminal()?;
     let tick = Duration::from_millis(50);
 
     loop {
@@ -43,16 +56,28 @@ fn main() -> Result<()> {
             }
         }
 
-        while let Ok(env) = rpc_rx.try_recv() {
-            let out = app.handle_rpc(env.req);
-            let _ = env.reply.send(out);
-        }
-
+        process_rpc(&mut app, &rpc_rx);
         app.tick();
     }
 
     restore_terminal(terminal)?;
     Ok(())
+}
+
+fn run_headless(mut app: Protocol, rpc_rx: Receiver<RpcEnvelope>) -> Result<()> {
+    let tick = Duration::from_millis(50);
+    loop {
+        process_rpc(&mut app, &rpc_rx);
+        app.tick();
+        thread::sleep(tick);
+    }
+}
+
+fn process_rpc(app: &mut Protocol, rpc_rx: &Receiver<RpcEnvelope>) {
+    while let Ok(env) = rpc_rx.try_recv() {
+        let out = app.handle_rpc(env.req);
+        let _ = env.reply.send(out);
+    }
 }
 
 fn init_terminal() -> Result<DefaultTerminal> {

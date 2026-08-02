@@ -12,6 +12,7 @@ pub fn parse_args() -> Result<Config> {
     let mut validator_id: Option<String> = None;
     let mut validator_account: Option<String> = None;
     let mut genesis_path = "genesis.json".to_string();
+    let mut no_tui = false;
 
     let args: Vec<String> = std::env::args().collect();
     let mut i = 1;
@@ -74,6 +75,9 @@ pub fn parse_args() -> Result<Config> {
                 }
                 genesis_path = args[i].clone();
             }
+            "--no-tui" => {
+                no_tui = true;
+            }
             _ => {}
         }
         i += 1;
@@ -91,5 +95,6 @@ pub fn parse_args() -> Result<Config> {
         validator_id,
         validator_account,
         genesis_path,
+        no_tui,
     })
 }

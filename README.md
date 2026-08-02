@@ -118,6 +118,18 @@ Run with a custom genesis file:
 cargo run -- --genesis ./genesis.json
 ```
 
+Run without initializing the terminal UI:
+
+```bash
+cargo run -- --no-tui --mode standard --p2p-port 30334 --rpc-port 8545
+```
+
+`--no-tui` keeps the process in the foreground. Use your shell or service manager to run it in the background, for example:
+
+```bash
+nohup cargo run --release -- --no-tui --mode standard --p2p-port 30334 --rpc-port 8545 > eternix.log 2>&1 &
+```
+
 Validator startup behavior for this prototype:
 
 - No validators are preloaded in genesis.
