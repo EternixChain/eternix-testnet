@@ -4,7 +4,7 @@ use std::net::{SocketAddr, UdpSocket};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use sha2::{Digest, Sha256};
+use sha3::{Digest, Keccak256};
 
 use crate::models::{BlockKind, SlotResult, Tx};
 
@@ -218,7 +218,7 @@ pub fn tx_id(tx: &Tx) -> String {
         tx.data,
         tx.signature_hex
     );
-    let mut h = Sha256::new();
+    let mut h = Keccak256::new();
     h.update(raw.as_bytes());
     hex::encode(h.finalize())
 }

@@ -1,7 +1,7 @@
 use super::*;
 
 pub(super) fn hash_bytes(input: &[u8]) -> [u8; 32] {
-    let mut h = Sha256::new();
+    let mut h = Keccak256::new();
     h.update(input);
     let out = h.finalize();
     let mut arr = [0_u8; 32];

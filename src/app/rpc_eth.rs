@@ -463,7 +463,8 @@ impl Protocol {
             data,
             tx_type,
         );
-        let sig: Signature = signing_key.sign(&msg);
+        let digest = keccak256(&msg);
+        let sig: Signature = signing_key.sign_prehash(&digest).ok()?;
         Some(format!("0x{}", hex::encode(sig.to_bytes())))
     }
 }

@@ -1,4 +1,4 @@
-use sha2::{Digest, Sha256};
+use sha3::{Digest, Keccak256};
 
 use crate::models::Ticket;
 
@@ -12,7 +12,7 @@ pub fn historical_block_slot(slot_index: u64) -> u64 {
 }
 
 pub fn slot_randomness(historical_block_hash: [u8; 32], slot_index: u64) -> [u8; 32] {
-    let mut hasher = Sha256::new();
+    let mut hasher = Keccak256::new();
     hasher.update(LEADER_SELECTION_DOMAIN);
     hasher.update(historical_block_hash);
     hasher.update(slot_index.to_be_bytes());
@@ -27,12 +27,12 @@ fn uniform_below(seed: [u8; 32], upper_bound: u64) -> Option<u64> {
     let threshold = upper_bound.wrapping_neg() % upper_bound;
     let mut retry = 0_u64;
     loop {
-        let mut hasher = Sha256::new();
+        let mut hasher = Keccak256::new();
         hasher.update(BUCKET_SELECTION_DOMAIN);
         hasher.update(seed);
         hasher.update(retry.to_be_bytes());
         let hash = hasher.finalize();
-        // The first eight SHA-256 bytes form the uniform source value in big-endian order.
+        // The first eight Keccak-256 bytes form the uniform source value in big-endian order.
         let raw = u64::from_be_bytes(hash[..8].try_into().ok()?);
         if raw >= threshold {
             return Some(raw % upper_bound);
@@ -61,7 +61,7 @@ fn select_bucket(seed: [u8; 32], bucket_counts: &[u64; 256]) -> Option<u8> {
 }
 
 fn ticket_score(seed: [u8; 32], ticket_id: u64) -> [u8; 32] {
-    let mut hasher = Sha256::new();
+    let mut hasher = Keccak256::new();
     hasher.update(TICKET_SELECTION_DOMAIN);
     hasher.update(seed);
     hasher.update(ticket_id.to_be_bytes());
@@ -154,7 +154,7 @@ mod tests {
     #[test]
     fn bucket_and_ticket_hashes_are_domain_separated() {
         let base = slot_randomness([6; 32], 42);
-        let mut bucket_hasher = Sha256::new();
+        let mut bucket_hasher = Keccak256::new();
         bucket_hasher.update(BUCKET_SELECTION_DOMAIN);
         bucket_hasher.update(base);
         bucket_hasher.update(0_u64.to_be_bytes());
