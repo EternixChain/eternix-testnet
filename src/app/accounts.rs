@@ -251,7 +251,7 @@ impl Protocol {
             .mempool
             .iter()
             .chain(self.state.pbm_pool.iter())
-            .filter(|tx| tx.kind == "registerValidator")
+            .filter(|tx| tx.kind == TxKind::RegisterValidator)
             .map(|tx| tx.to.as_str());
         let next = validator_ids
             .chain(pending_ids)
@@ -329,14 +329,17 @@ impl Protocol {
         }
     }
 
-    pub(super) fn pbm_allowed_kind(kind: &str) -> bool {
-        matches!(kind, "registerValidator" | "walletToVault" | "buyTicket")
+    pub(super) fn pbm_allowed_kind(kind: TxKind) -> bool {
+        matches!(
+            kind,
+            TxKind::RegisterValidator | TxKind::WalletToVault | TxKind::BuyTicket
+        )
     }
 
     pub(super) fn enqueue_standard_or_pbm(
         &mut self,
         mut tx: Tx,
-    ) -> Result<(String, u64, Tx), String> {
+    ) -> Result<(Hash, u64, Tx), String> {
         let pbm_active = self.total_eligible_tickets() == 0;
         if pbm_active {
             // PBM only admits the bootstrap path, and staggers same-account txs to preserve nonce order.
@@ -360,7 +363,9 @@ impl Protocol {
                 .slot
                 .saturating_add(PBM_VALID_AFTER_SLOTS)
                 .saturating_add(pending as u64);
-            let tx_hash = tx_id(&tx);
+            let tx_hash = tx
+                .hash()
+                .ok_or_else(|| "transaction cannot be canonically encoded".to_string())?;
             let valid_after_slot = tx.valid_after_slot;
             let accepted_tx = tx.clone();
             self.state.pbm_pool.push_back(tx);
@@ -368,7 +373,9 @@ impl Protocol {
         }
 
         tx.valid_after_slot = 0;
-        let tx_hash = tx_id(&tx);
+        let tx_hash = tx
+            .hash()
+            .ok_or_else(|| "transaction cannot be canonically encoded".to_string())?;
         let accepted_tx = tx.clone();
         self.state.mempool.push_back(tx);
         Ok((tx_hash, 0, accepted_tx))

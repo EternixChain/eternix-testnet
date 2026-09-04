@@ -1,6 +1,6 @@
 use sha3::{Digest, Keccak256};
 
-use crate::models::Ticket;
+use crate::models::{Hash, Ticket};
 
 const LEADER_SELECTION_DOMAIN: &[u8] = b"eternix:leader-selection:v1";
 const BUCKET_SELECTION_DOMAIN: &[u8] = b"eternix:bucket-selection:v1";
@@ -11,7 +11,7 @@ pub fn historical_block_slot(slot_index: u64) -> u64 {
     slot_index.saturating_sub(BLOCK_HASH_LOOKBACK_SLOTS)
 }
 
-pub fn slot_randomness(historical_block_hash: [u8; 32], slot_index: u64) -> [u8; 32] {
+pub fn slot_randomness(historical_block_hash: Hash, slot_index: u64) -> Hash {
     let mut hasher = Keccak256::new();
     hasher.update(LEADER_SELECTION_DOMAIN);
     hasher.update(historical_block_hash);
@@ -19,7 +19,7 @@ pub fn slot_randomness(historical_block_hash: [u8; 32], slot_index: u64) -> [u8;
     hasher.finalize().into()
 }
 
-fn uniform_below(seed: [u8; 32], upper_bound: u64) -> Option<u64> {
+fn uniform_below(seed: Hash, upper_bound: u64) -> Option<u64> {
     if upper_bound == 0 {
         return None;
     }
@@ -52,7 +52,7 @@ fn bucket_for_offset(bucket_counts: &[u64; 256], mut offset: u64) -> Option<u8> 
     None
 }
 
-fn select_bucket(seed: [u8; 32], bucket_counts: &[u64; 256]) -> Option<u8> {
+fn select_bucket(seed: Hash, bucket_counts: &[u64; 256]) -> Option<u8> {
     let total_active = (2u16..=255).try_fold(0_u64, |total, bucket_id| {
         total.checked_add(bucket_counts[bucket_id as usize])
     })?;
@@ -60,7 +60,7 @@ fn select_bucket(seed: [u8; 32], bucket_counts: &[u64; 256]) -> Option<u8> {
     bucket_for_offset(bucket_counts, offset)
 }
 
-fn ticket_score(seed: [u8; 32], ticket_id: u64) -> [u8; 32] {
+fn ticket_score(seed: Hash, ticket_id: u64) -> Hash {
     let mut hasher = Keccak256::new();
     hasher.update(TICKET_SELECTION_DOMAIN);
     hasher.update(seed);
@@ -68,9 +68,9 @@ fn ticket_score(seed: [u8; 32], ticket_id: u64) -> [u8; 32] {
     hasher.finalize().into()
 }
 
-fn select_ticket(seed: [u8; 32], ticket_ids: &[u64]) -> Option<u64> {
+fn select_ticket(seed: Hash, ticket_ids: &[u64]) -> Option<u64> {
     let mut best_ticket: Option<u64> = None;
-    let mut best_score: Option<[u8; 32]> = None;
+    let mut best_score: Option<Hash> = None;
 
     for &ticket_id in ticket_ids {
         let hash = ticket_score(seed, ticket_id);
@@ -92,11 +92,11 @@ fn select_ticket(seed: [u8; 32], ticket_ids: &[u64]) -> Option<u64> {
     best_ticket
 }
 
-pub fn select_leader_owner(
-    historical_block_hash: [u8; 32],
+pub fn select_leader_ticket(
+    historical_block_hash: Hash,
     slot_index: u64,
     eligible_tickets: &[&Ticket],
-) -> Option<String> {
+) -> Option<(String, u64)> {
     if eligible_tickets.is_empty() {
         return None;
     }
@@ -123,7 +123,7 @@ pub fn select_leader_owner(
     eligible_tickets
         .iter()
         .find(|t| t.id == winner_ticket_id)
-        .map(|t| t.owner.clone())
+        .map(|t| (t.owner.clone(), t.id))
 }
 
 #[cfg(test)]
@@ -132,7 +132,7 @@ mod tests {
 
     #[test]
     fn no_tickets_returns_none() {
-        assert_eq!(select_leader_owner([0; 32], 0, &[]), None);
+        assert_eq!(select_leader_ticket([0; 32], 0, &[]), None);
     }
 
     #[test]

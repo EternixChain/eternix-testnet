@@ -8,6 +8,7 @@ pub const SUB_EPOCH_SLOTS: u64 = 1200;
 pub const EPOCH_SUB_EPOCHS: u64 = 24;
 // Late validator blocks may correct provisional miss results while they are still visible in history.
 pub const FINALITY_WINDOW_SLOTS: u64 = 20;
+pub type Hash = [u8; 32];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ValidatorState {
@@ -59,6 +60,19 @@ pub enum BlockKind {
     ProtocolNoTickets,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TxKind {
+    Transfer,
+    Contract,
+    System,
+    Pbm,
+    RegisterValidator,
+    BuyTicket,
+    WalletToVault,
+    VaultToWallet,
+    BurnTicket,
+}
+
 #[derive(Clone, Debug)]
 pub struct Validator {
     pub id: String,
@@ -88,7 +102,7 @@ pub struct Ticket {
     pub retire_effective_epoch: Option<u64>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Tx {
     pub chain_id: u64,
     pub from: String,
@@ -99,12 +113,45 @@ pub struct Tx {
     pub gas: u64,
     pub fee_quarks: u64,
     pub max_fee_per_gas: u64,
-    pub kind: &'static str,
+    pub kind: TxKind,
     // PBM transactions become executable only after this slot; normal mempool transactions use zero.
     pub valid_after_slot: u64,
     pub fee_token_id: u64,
     pub data: String,
     pub signature_hex: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BlockHeader {
+    pub protocol_version: u32,
+    pub chain_id: u64,
+    pub slot: u64,
+    pub block_kind: BlockKind,
+    pub parent_hash: Hash,
+    // Validator IDs are represented here by their fixed 32-byte canonical proposer commitment.
+    pub proposer_id: Hash,
+    // Ticket IDs are native u64 values and are serialized big-endian.
+    pub ticket_id: u64,
+    pub transaction_root: Hash,
+    pub state_root: Hash,
+    pub receipts_root: Hash,
+    pub gas_used: u64,
+    pub protocol_data_root: Hash,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProtocolData {
+    pub missed_proposer: Option<String>,
+    pub fees_burned: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Block {
+    pub header: BlockHeader,
+    // The readable ID is retained in the body so validators can verify its header commitment.
+    pub proposer: Option<String>,
+    pub transactions: Vec<Tx>,
+    pub protocol_data: ProtocolData,
 }
 
 #[derive(Clone, Debug)]
@@ -117,25 +164,14 @@ pub struct Account {
     pub balances: HashMap<u64, u128>,
 }
 
-#[derive(Clone, Debug)]
-pub struct SlotResult {
-    pub slot: u64,
-    pub leader: String,
-    pub kind: BlockKind,
-    pub tx_count: u32,
-    pub gas_used: u64,
-    pub fees_burned: u64,
-}
-
 pub struct ProtocolState {
     pub slot: u64,
     pub slot_started: Instant,
-    pub prev_hash: [u8; 32],
     pub validators: Vec<Validator>,
     pub tickets: Vec<Ticket>,
     pub mempool: VecDeque<Tx>,
     pub pbm_pool: VecDeque<Tx>,
-    pub history: VecDeque<SlotResult>,
+    pub history: VecDeque<Block>,
     pub events: VecDeque<String>,
     pub sync_pct: f64,
     // Fee burns accumulated in the current sub-epoch; ticket burns are deliberately excluded from burn-offset.
@@ -156,8 +192,9 @@ pub struct ProtocolState {
     pub epoch_total_slots: u64,
     pub mode: Mode,
     pub current_leader: String,
+    pub current_ticket_id: u64,
     pub exec_status: ExecStatus,
-    pub current_result: Option<SlotResult>,
+    pub current_result: Option<Block>,
     pub nonce_tracker: HashMap<String, u64>,
     pub mode_local: NodeMode,
     pub local_validator_id: Option<String>,
@@ -168,7 +205,7 @@ pub struct ProtocolState {
     pub anchor_time: SystemTime,
     pub bootstrapped_from_peer: bool,
     pub validator_peers: HashMap<String, SocketAddr>,
-    pub remote_slot_results: BTreeMap<u64, SlotResult>,
+    pub remote_slot_results: BTreeMap<u64, Block>,
     // History sync is only a bootstrap aid; later peer history is treated as correction data.
     pub history_synced: bool,
     pub liveness_epoch: u64,
@@ -177,22 +214,20 @@ pub struct ProtocolState {
     pub liveness_validator_slots: u64,
     pub epoch_index: u64,
     pub sub_epoch_index: u64,
-    pub epoch_seed: [u8; 32],
+    pub epoch_seed: Hash,
     pub blocks_this_sub_epoch: Vec<Option<String>>,
     pub retire_per_epoch_limit: u64,
     pub retire_schedule: BTreeMap<u64, Vec<u64>>,
     pub retire_finalize: BTreeMap<u64, Vec<u64>>,
     pub reward_unlocks: BTreeMap<u64, Vec<(String, u128)>>,
-    pub raw_txs: HashMap<String, RawTxRecord>,
-    pub raw_tx_pending: VecDeque<String>,
-    pub block_transactions: HashMap<u64, Vec<String>>,
-    pub blocks: HashMap<u64, BlockRecord>,
-    pub block_hash_to_number: HashMap<String, u64>,
+    pub raw_txs: HashMap<Hash, RawTxRecord>,
+    pub blocks: HashMap<u64, Block>,
+    pub block_hash_to_number: HashMap<Hash, u64>,
 }
 
 #[derive(Clone, Debug)]
 pub struct RawTxRecord {
-    pub hash: String,
+    pub hash: Hash,
     pub raw: String,
     pub from: String,
     pub to: Option<String>,
@@ -207,17 +242,7 @@ pub struct RawTxRecord {
     pub r: String,
     pub s: String,
     pub block_number: Option<u64>,
-    pub block_hash: Option<String>,
+    pub block_hash: Option<Hash>,
     pub tx_index: Option<u64>,
     pub success: Option<bool>,
-}
-
-#[derive(Clone, Debug)]
-pub struct BlockRecord {
-    pub number: u64,
-    pub hash: String,
-    pub parent_hash: String,
-    pub timestamp_ms: u64,
-    pub gas_used: u64,
-    pub tx_hashes: Vec<String>,
 }

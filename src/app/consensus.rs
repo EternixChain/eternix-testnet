@@ -10,19 +10,25 @@ impl Protocol {
         } else {
             Mode::Normal
         };
-        self.state.current_leader = self.select_leader();
+        (self.state.current_leader, self.state.current_ticket_id) = self.select_leader();
         self.state.exec_status = ExecStatus::Executing;
     }
 
-    pub(super) fn finish_slot(&mut self) {
+    pub(super) fn finish_slot(&mut self) -> bool {
         if let Some(remote) = self.state.remote_slot_results.remove(&self.state.slot) {
             // Future results are revalidated at slot close because ticket state can change while queued.
-            if self.accept_remote_slot_result(&remote) {
-                self.record_hash(&remote);
-                self.record_slot(remote);
+            if self.accept_remote_slot_result(&remote) && self.record_slot(remote) {
                 self.run_boundaries();
-                return;
+                return true;
             }
+        }
+
+        if self.canonical_parent_hash(self.state.slot).is_none() {
+            self.state.events.push_front(format!(
+                "slot {} deferred: canonical parent unavailable",
+                self.state.slot
+            ));
+            return false;
         }
 
         let no_tickets = self.total_eligible_tickets() == 0;
@@ -35,10 +41,13 @@ impl Protocol {
             self.protocol_miss_block()
         };
 
-        self.p2p.broadcast_message(&encode_slot_result(&result));
-        self.record_hash(&result);
-        self.record_slot(result);
-        self.run_boundaries();
+        self.p2p.broadcast_message(&encode_block(&result));
+        if self.record_slot(result) {
+            self.run_boundaries();
+            true
+        } else {
+            false
+        }
     }
 
     pub(super) fn is_local_leader(&self) -> bool {
@@ -63,18 +72,11 @@ impl Protocol {
             .any(|v| v.id == id && v.state == ValidatorState::Active)
     }
 
-    pub(super) fn leader_selection_block_hash(&self, slot_index: u64) -> Option<[u8; 32]> {
-        if slot_index < crate::leader_selection::BLOCK_HASH_LOOKBACK_SLOTS {
-            return Some(block_hash_bytes(0));
-        }
-        let block_number = historical_block_slot(slot_index);
-        self.state
-            .blocks
-            .get(&block_number)
-            .and_then(|block| decode_block_hash(&block.hash))
+    pub(super) fn leader_selection_block_hash(&self, slot_index: u64) -> Option<Hash> {
+        historical_block_hash(&self.state.blocks, slot_index)
     }
 
-    pub(super) fn select_leader(&mut self) -> String {
+    pub(super) fn select_leader(&self) -> (String, u64) {
         let eligible: Vec<&Ticket> = self
             .state
             .tickets
@@ -82,24 +84,36 @@ impl Protocol {
             .filter(|t| !t.dead && !t.muted && self.validator_active(&t.owner))
             .collect();
         let Some(historical_block_hash) = self.leader_selection_block_hash(self.state.slot) else {
-            return "protocol".to_string();
+            return ("protocol".to_string(), ZERO_TICKET_ID);
         };
-        select_leader_owner(historical_block_hash, self.state.slot, &eligible)
-            .unwrap_or_else(|| "protocol".to_string())
+        select_leader_ticket(historical_block_hash, self.state.slot, &eligible)
+            .unwrap_or_else(|| ("protocol".to_string(), ZERO_TICKET_ID))
     }
 
-    pub(super) fn validator_block(&mut self) -> SlotResult {
+    pub(super) fn validator_block(&mut self) -> Block {
         let mut gas = 0_u64;
-        let mut tx_count = 0_u32;
         let mut fees = 0_u64;
-        while let Some(tx) = self.state.mempool.front() {
-            if tx_count >= 3000 || gas + tx.gas > 16_000_000 {
+        let mut transactions = Vec::new();
+        while let Some(tx) = self.state.mempool.front().cloned() {
+            if transactions.len() >= MAX_BLOCK_TRANSACTIONS {
                 break;
             }
-            let tx = tx.clone();
+            if tx.chain_id != CHAIN_ID {
+                self.state.mempool.pop_front();
+                continue;
+            }
+            if tx.valid_after_slot > self.state.slot {
+                break;
+            }
+            let Some(next_gas) = gas.checked_add(tx.gas).filter(|sum| *sum <= MAX_BLOCK_GAS) else {
+                break;
+            };
+            let Some(next_fees) = fees.checked_add(tx.fee_quarks) else {
+                break;
+            };
             let fee = tx.fee_quarks as u128;
             let executed = match tx.kind {
-                "registerValidator" => {
+                TxKind::RegisterValidator => {
                     // Registration data is encoded in tx.data because the Tx envelope is shared with transfers.
                     let Some((validator_pubkey, reward_address)) =
                         decode_register_validator_data(&tx.data)
@@ -132,7 +146,7 @@ impl Protocol {
                         true
                     }
                 }
-                "buyTicket" => {
+                TxKind::BuyTicket => {
                     // Tx.value carries the requested ticket count for fixed-fee validator system txs.
                     let Some(count) = u64::try_from(tx.value).ok().filter(|count| *count > 0)
                     else {
@@ -159,7 +173,7 @@ impl Protocol {
                         true
                     }
                 }
-                "walletToVault" => {
+                TxKind::WalletToVault => {
                     // Vault deposits spend account balance immediately and may activate an already-ticketed validator.
                     let required = tx.value.saturating_add(fee);
                     if self.validator_owner_account(&tx.to).as_deref() != Some(tx.from.as_str())
@@ -185,7 +199,7 @@ impl Protocol {
                         false
                     }
                 }
-                "vaultToWallet" => {
+                TxKind::VaultToWallet => {
                     // Withdrawals keep the fee in the owner account path but move value out of validator vault.
                     if self.validator_owner_account(&tx.to).as_deref() != Some(tx.from.as_str())
                         || !self.can_pay_fee(&tx.from, TOKEN_ETX_ID, fee)
@@ -236,9 +250,9 @@ impl Protocol {
             if !executed {
                 continue;
             }
-            gas += tx.gas;
-            fees += tx.fee_quarks;
-            tx_count += 1;
+            gas = next_gas;
+            fees = next_fees;
+            transactions.push(tx);
             if self.rng.gen_bool(0.07) {
                 break;
             }
@@ -281,44 +295,36 @@ impl Protocol {
                 self.state.epoch_issued_quarks.saturating_add(base_reward);
         }
 
-        if let Some(hash) = self.state.raw_tx_pending.pop_front()
-            && let Some(rec) = self.state.raw_txs.get_mut(&hash)
-        {
-            rec.block_number = Some(self.state.slot);
-            rec.block_hash = Some(format!(
-                "0x{}",
-                hex::encode(block_hash_bytes(self.state.slot))
-            ));
-            rec.tx_index = Some(0);
-            rec.success = Some(true);
-            self.state
-                .block_transactions
-                .entry(self.state.slot)
-                .or_default()
-                .push(hash);
-        }
-
-        SlotResult {
-            slot: self.state.slot,
-            leader: self.state.current_leader.clone(),
-            kind: BlockKind::Validator,
-            tx_count,
-            gas_used: gas,
-            fees_burned: fees as u64,
-        }
+        self.build_block(
+            BlockKind::Validator,
+            Some(self.state.current_leader.clone()),
+            self.state.current_ticket_id,
+            transactions,
+            gas,
+            ProtocolData {
+                missed_proposer: None,
+                fees_burned: fees as u64,
+            },
+        )
+        .expect("validator block has a canonical parent and valid commitments")
     }
 
-    pub(super) fn protocol_miss_block(&mut self) -> SlotResult {
+    pub(super) fn protocol_miss_block(&mut self) -> Block {
         if self.state.local_validator_id.as_deref() != Some(self.state.current_leader.as_str()) {
             // Standard nodes cannot know whether a remote leader was truly absent; avoid provisional penalties.
-            return SlotResult {
-                slot: self.state.slot,
-                leader: self.state.current_leader.clone(),
-                kind: BlockKind::ProtocolMiss,
-                tx_count: 0,
-                gas_used: 0,
-                fees_burned: 0,
-            };
+            return self
+                .build_block(
+                    BlockKind::ProtocolMiss,
+                    None,
+                    ZERO_TICKET_ID,
+                    Vec::new(),
+                    0,
+                    ProtocolData {
+                        missed_proposer: Some(self.state.current_leader.clone()),
+                        fees_burned: 0,
+                    },
+                )
+                .expect("miss block has a canonical parent and valid commitments");
         }
         if let Some(v) = self
             .state
@@ -332,40 +338,45 @@ impl Protocol {
                 v.cooldown_until_epoch = Some(self.state.epoch_index + 1);
             }
         }
-        SlotResult {
-            slot: self.state.slot,
-            leader: self.state.current_leader.clone(),
-            kind: BlockKind::ProtocolMiss,
-            tx_count: 0,
-            gas_used: 0,
-            fees_burned: 0,
-        }
+        self.build_block(
+            BlockKind::ProtocolMiss,
+            None,
+            ZERO_TICKET_ID,
+            Vec::new(),
+            0,
+            ProtocolData {
+                missed_proposer: Some(self.state.current_leader.clone()),
+                fees_burned: 0,
+            },
+        )
+        .expect("miss block has a canonical parent and valid commitments")
     }
 
-    pub(super) fn protocol_collision_block(&mut self) -> SlotResult {
-        SlotResult {
-            slot: self.state.slot,
-            leader: self.state.current_leader.clone(),
-            kind: BlockKind::ProtocolCollision,
-            tx_count: 0,
-            gas_used: 0,
-            fees_burned: 0,
-        }
+    pub(super) fn protocol_collision_block(&mut self) -> Block {
+        self.build_block(
+            BlockKind::ProtocolCollision,
+            None,
+            ZERO_TICKET_ID,
+            Vec::new(),
+            0,
+            ProtocolData::empty(),
+        )
+        .expect("collision block has a canonical parent and valid commitments")
     }
 
-    pub(super) fn protocol_no_tickets_block(&mut self) -> SlotResult {
-        let mut tx_count = 0_u32;
+    pub(super) fn protocol_no_tickets_block(&mut self) -> Block {
         let mut gas_used = 0_u64;
         let mut fees_burned = 0_u64;
+        let mut transactions = Vec::new();
 
         if let Some(index) = self.select_pbm_tx_index()
             && let Some(tx) = self.state.pbm_pool.remove(index)
-            && let Some((gas, fees)) = self.execute_pbm_tx(tx)
+            && let Some((gas, fees)) = self.execute_pbm_tx(tx.clone())
         {
             // PBM advances the chain without tickets but only includes one deterministic bootstrap tx per slot.
-            tx_count = 1;
             gas_used = gas;
             fees_burned = fees;
+            transactions.push(tx);
             let fees = fees as u128;
             self.state.fees_burned_total = self.state.fees_burned_total.saturating_add(fees);
             self.state.burn_this_sub_epoch = self.state.burn_this_sub_epoch.saturating_add(fees);
@@ -376,18 +387,22 @@ impl Protocol {
 
         self.deactivate_pbm_if_ready();
 
-        SlotResult {
-            slot: self.state.slot,
-            leader: "protocol".to_string(),
-            kind: BlockKind::ProtocolNoTickets,
-            tx_count,
+        self.build_block(
+            BlockKind::ProtocolNoTickets,
+            None,
+            ZERO_TICKET_ID,
+            transactions,
             gas_used,
-            fees_burned,
-        }
+            ProtocolData {
+                missed_proposer: None,
+                fees_burned,
+            },
+        )
+        .expect("no-ticket block has a canonical parent and valid commitments")
     }
 
     pub(super) fn select_pbm_tx_index(&self) -> Option<usize> {
-        let mut candidates: Vec<(usize, u64, String)> = self
+        let mut candidates: Vec<(usize, u64, Hash)> = self
             .state
             .pbm_pool
             .iter()
@@ -395,7 +410,7 @@ impl Protocol {
             .filter(|(_, tx)| {
                 Protocol::pbm_allowed_kind(tx.kind) && tx.valid_after_slot <= self.state.slot
             })
-            .map(|(index, tx)| (index, tx.valid_after_slot, tx_id(tx)))
+            .filter_map(|(index, tx)| Some((index, tx.valid_after_slot, tx.hash()?)))
             .collect();
         candidates.sort_by(|a, b| (a.1, &a.2).cmp(&(b.1, &b.2)));
         candidates.first().map(|(index, _, _)| *index)
@@ -404,7 +419,7 @@ impl Protocol {
     pub(super) fn execute_pbm_tx(&mut self, tx: Tx) -> Option<(u64, u64)> {
         let fee = tx.fee_quarks as u128;
         match tx.kind {
-            "registerValidator" => {
+            TxKind::RegisterValidator => {
                 let (validator_pubkey, reward_address) = decode_register_validator_data(&tx.data)?;
                 let validator_pubkey = self.normalize_validator_pubkey(&validator_pubkey)?;
                 if self.state.validators.iter().any(|v| v.id == tx.to)
@@ -419,7 +434,7 @@ impl Protocol {
                 self.register_validator_record(tx.to, &tx.from, validator_pubkey, reward_address);
                 Some((tx.gas, tx.fee_quarks))
             }
-            "walletToVault" => {
+            TxKind::WalletToVault => {
                 let required = tx.value.saturating_add(fee);
                 if self.validator_owner_account(&tx.to).as_deref() != Some(tx.from.as_str())
                     || !self.can_pay_fee(&tx.from, TOKEN_ETX_ID, required)
@@ -442,7 +457,7 @@ impl Protocol {
                 self.credit_balance(&tx.from, TOKEN_ETX_ID, tx.value);
                 None
             }
-            "buyTicket" => {
+            TxKind::BuyTicket => {
                 let count = u64::try_from(tx.value).ok().filter(|count| *count > 0)?;
                 let cost = TICKET_COST_QUARKS.saturating_mul(tx.value);
                 let required = cost.saturating_add(fee);
@@ -471,8 +486,7 @@ impl Protocol {
             return;
         }
         self.state.mode = Mode::Normal;
-        while let Some(mut tx) = self.state.pbm_pool.pop_front() {
-            tx.valid_after_slot = 0;
+        while let Some(tx) = self.state.pbm_pool.pop_front() {
             self.state.mempool.push_back(tx);
         }
         self.state
@@ -547,31 +561,66 @@ impl Protocol {
         }
     }
 
-    pub(super) fn record_hash(&mut self, r: &SlotResult) {
-        self.state.prev_hash =
-            hash_bytes(format!("{}-{}-{}", r.slot, r.leader, r.tx_count).as_bytes());
+    pub(super) fn canonical_parent_hash(&self, slot: u64) -> Option<Hash> {
+        if slot == 0 {
+            return Some(ZERO_HASH);
+        }
+        self.state
+            .blocks
+            .get(&slot.saturating_sub(1))
+            .map(Block::hash)
     }
 
-    pub(super) fn record_slot(&mut self, result: SlotResult) {
+    pub(super) fn build_block(
+        &self,
+        block_kind: BlockKind,
+        proposer: Option<String>,
+        ticket_id: u64,
+        transactions: Vec<Tx>,
+        gas_used: u64,
+        protocol_data: ProtocolData,
+    ) -> Option<Block> {
+        Block::new(
+            self.state.slot,
+            block_kind,
+            self.canonical_parent_hash(self.state.slot)?,
+            proposer,
+            ticket_id,
+            transactions,
+            gas_used,
+            protocol_data,
+        )
+    }
+
+    pub(super) fn record_slot(&mut self, result: Block) -> bool {
+        if !self.validate_block_commitments_and_parent(&result) {
+            self.state.events.push_front(format!(
+                "rejected block {}: invalid commitment or parent",
+                short_hash(&result.hash())
+            ));
+            return false;
+        }
         self.state.current_result = Some(result.clone());
         // Recent provisional miss/no-ticket entries can be replaced by late validator blocks from peers.
         let replaced = self
             .state
             .history
             .iter()
-            .find(|h| h.slot == result.slot)
+            .find(|h| h.slot() == result.slot())
             .cloned();
         let replacing = replaced.is_some();
-        self.state.history.retain(|h| h.slot != result.slot);
+        self.state.history.retain(|h| h.slot() != result.slot());
         if let Some(old) = &replaced {
             self.revert_replaced_result(old, &result);
         }
         self.update_liveness(&result);
-        self.state.blocks_this_sub_epoch.push(match result.kind {
-            BlockKind::Validator => Some(result.leader.clone()),
+        self.state.blocks_this_sub_epoch.push(match result.kind() {
+            BlockKind::Validator => result.proposer.clone(),
             _ => None,
         });
-        self.record_block(&result);
+        if !self.record_block(&result) {
+            return false;
+        }
         self.state.history.push_front(result);
         if self.state.history.len() > 50 {
             self.state.history.pop_back();
@@ -579,20 +628,21 @@ impl Protocol {
         if replacing {
             self.rebuild_liveness_from_history();
         }
+        true
     }
 
-    pub(super) fn merge_slot_result(&mut self, result: SlotResult) {
+    pub(super) fn merge_slot_result(&mut self, result: Block) {
         // Peer history is correction-only after bootstrap: validator blocks can replace weaker local results.
         let existing = self
             .state
             .history
             .iter()
-            .find(|h| h.slot == result.slot)
+            .find(|h| h.slot() == result.slot())
             .cloned();
         let should_apply = match existing.as_ref() {
-            Some(old) if old.kind == BlockKind::Validator => false,
+            Some(old) if old.kind() == BlockKind::Validator => false,
             Some(old)
-                if result.kind == BlockKind::Validator && old.kind != BlockKind::Validator =>
+                if result.kind() == BlockKind::Validator && old.kind() != BlockKind::Validator =>
             {
                 true
             }
@@ -602,30 +652,40 @@ impl Protocol {
         if !should_apply {
             return;
         }
+        if self.state.blocks.keys().any(|slot| *slot > result.slot()) {
+            // Replacing an ancestor would invalidate every descendant parent hash.
+            return;
+        }
+        if !self.validate_block_commitments_and_parent(&result) {
+            return;
+        }
 
-        self.state.history.retain(|h| h.slot != result.slot);
+        self.state.history.retain(|h| h.slot() != result.slot());
         if let Some(old) = &existing {
             self.revert_replaced_result(old, &result);
         }
-        self.record_block(&result);
+        if !self.record_block(&result) {
+            return;
+        }
         self.state.history.push_front(result.clone());
 
-        let mut entries: Vec<SlotResult> = self.state.history.iter().cloned().collect();
-        entries.sort_by_key(|e| std::cmp::Reverse(e.slot));
+        let mut entries: Vec<Block> = self.state.history.iter().cloned().collect();
+        entries.sort_by_key(|e| std::cmp::Reverse(e.slot()));
         entries.truncate(50);
         self.state.history = std::collections::VecDeque::from(entries);
         self.rebuild_liveness_from_history();
         self.state.events.push_front(format!(
             "slot {} corrected from peer: {:?}",
-            result.slot, result.kind
+            result.slot(),
+            result.kind()
         ));
     }
 
-    pub(super) fn revert_replaced_result(&mut self, old: &SlotResult, new: &SlotResult) {
+    pub(super) fn revert_replaced_result(&mut self, old: &Block, new: &Block) {
         // Undo local provisional punishment if a valid validator block later replaces the miss.
-        if old.kind != BlockKind::ProtocolMiss
-            || new.kind != BlockKind::Validator
-            || old.leader != new.leader
+        if old.kind() != BlockKind::ProtocolMiss
+            || new.kind() != BlockKind::Validator
+            || old.leader() != new.leader()
         {
             return;
         }
@@ -634,7 +694,7 @@ impl Protocol {
             .state
             .validators
             .iter_mut()
-            .find(|v| v.id == old.leader)
+            .find(|v| v.id == old.leader())
         {
             if v.miss_counter > 0 {
                 v.miss_counter -= 1;
@@ -650,46 +710,51 @@ impl Protocol {
         }
     }
 
-    pub(super) fn record_block(&mut self, result: &SlotResult) {
-        let number = result.slot;
-        let hash = format!("0x{}", hex::encode(block_hash_bytes(number)));
-        let parent_hash = if number == 0 {
-            "0x0000000000000000000000000000000000000000000000000000000000000000".to_string()
-        } else {
-            format!("0x{}", hex::encode(block_hash_bytes(number - 1)))
-        };
-        let timestamp_ms = unix_ms_now() as u64;
-        let tx_hashes = self
-            .state
-            .block_transactions
-            .get(&number)
-            .cloned()
-            .unwrap_or_default();
-        let rec = BlockRecord {
-            number,
-            hash: hash.clone(),
-            parent_hash,
-            timestamp_ms,
-            gas_used: result.gas_used,
-            tx_hashes,
-        };
-        self.state.block_hash_to_number.insert(hash, number);
-        self.state.blocks.insert(number, rec);
+    pub(super) fn validate_block_commitments_and_parent(&self, block: &Block) -> bool {
+        block.validate_commitments()
+            && self
+                .canonical_parent_hash(block.slot())
+                .is_some_and(|parent| block.validate_parent(parent))
     }
 
-    pub(super) fn update_liveness(&mut self, result: &SlotResult) {
-        let epoch = result.slot / (SUB_EPOCH_SLOTS * EPOCH_SUB_EPOCHS);
+    pub(super) fn record_block(&mut self, block: &Block) -> bool {
+        if !self.validate_block_commitments_and_parent(block) {
+            return false;
+        }
+        let number = block.slot();
+        if let Some(old) = self.state.blocks.get(&number) {
+            self.state.block_hash_to_number.remove(&old.hash());
+        }
+        let hash = block.hash();
+        self.state.block_hash_to_number.insert(hash, number);
+        self.state.blocks.insert(number, block.clone());
+
+        if let Some(transaction_hashes) = block.transaction_hashes() {
+            for (index, transaction_hash) in transaction_hashes.into_iter().enumerate() {
+                if let Some(record) = self.state.raw_txs.get_mut(&transaction_hash) {
+                    record.block_number = Some(number);
+                    record.block_hash = Some(hash);
+                    record.tx_index = u64::try_from(index).ok();
+                    record.success = Some(true);
+                }
+            }
+        }
+        true
+    }
+
+    pub(super) fn update_liveness(&mut self, result: &Block) {
+        let epoch = result.slot() / (SUB_EPOCH_SLOTS * EPOCH_SUB_EPOCHS);
         if epoch != self.state.liveness_epoch {
             self.state.liveness_epoch = epoch;
             self.state.liveness_counted_slots.clear();
             self.state.liveness_total_slots = 0;
             self.state.liveness_validator_slots = 0;
         }
-        if !self.state.liveness_counted_slots.insert(result.slot) {
+        if !self.state.liveness_counted_slots.insert(result.slot()) {
             return;
         }
         self.state.liveness_total_slots += 1;
-        if result.kind == BlockKind::Validator {
+        if result.kind() == BlockKind::Validator {
             self.state.liveness_validator_slots += 1;
         }
         self.state.epoch_total_slots = self.state.liveness_total_slots;
@@ -701,19 +766,19 @@ impl Protocol {
         self.state.liveness_total_slots = 0;
         self.state.liveness_validator_slots = 0;
 
-        let mut entries: Vec<SlotResult> = self.state.history.iter().cloned().collect();
-        entries.sort_by_key(|e| e.slot);
+        let mut entries: Vec<Block> = self.state.history.iter().cloned().collect();
+        entries.sort_by_key(Block::slot);
         if let Some(last) = entries.last() {
-            self.state.liveness_epoch = last.slot / (SUB_EPOCH_SLOTS * EPOCH_SUB_EPOCHS);
+            self.state.liveness_epoch = last.slot() / (SUB_EPOCH_SLOTS * EPOCH_SUB_EPOCHS);
         }
         for e in &entries {
-            let epoch = e.slot / (SUB_EPOCH_SLOTS * EPOCH_SUB_EPOCHS);
+            let epoch = e.slot() / (SUB_EPOCH_SLOTS * EPOCH_SUB_EPOCHS);
             if epoch != self.state.liveness_epoch {
                 continue;
             }
-            if self.state.liveness_counted_slots.insert(e.slot) {
+            if self.state.liveness_counted_slots.insert(e.slot()) {
                 self.state.liveness_total_slots += 1;
-                if e.kind == BlockKind::Validator {
+                if e.kind() == BlockKind::Validator {
                     self.state.liveness_validator_slots += 1;
                 }
             }
@@ -726,7 +791,7 @@ impl Protocol {
         let mut data = Vec::new();
         data.extend_from_slice(&self.state.epoch_seed);
         data.extend_from_slice(&self.state.epoch_index.to_be_bytes());
-        self.state.epoch_seed = hash_bytes(&data);
+        self.state.epoch_seed = hash_with_domain(EPOCH_SEED_DOMAIN, &data);
     }
 
     pub(super) fn process_epoch_validator_transitions(&mut self) {
@@ -779,5 +844,105 @@ impl Protocol {
         for owner in owners {
             self.refresh_validator_activation(&owner);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn protocol() -> Protocol {
+        Protocol::new(Config {
+            mode: NodeMode::Standard,
+            p2p_port: 0,
+            peers: Vec::new(),
+            rpc_port: 0,
+            validator_id: None,
+            validator_account: None,
+            genesis_path: "/definitely/missing/eternix-test-genesis.json".to_string(),
+            no_tui: true,
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn block_storage_rejects_parent_mismatch() {
+        let mut protocol = protocol();
+        let parent = protocol
+            .build_block(
+                BlockKind::ProtocolNoTickets,
+                None,
+                ZERO_TICKET_ID,
+                Vec::new(),
+                0,
+                ProtocolData::empty(),
+            )
+            .unwrap();
+        assert!(protocol.record_block(&parent));
+
+        protocol.state.slot = 1;
+        let child = protocol
+            .build_block(
+                BlockKind::ProtocolNoTickets,
+                None,
+                ZERO_TICKET_ID,
+                Vec::new(),
+                0,
+                ProtocolData::empty(),
+            )
+            .unwrap();
+        assert_eq!(child.header.parent_hash, parent.hash());
+
+        let mut mismatched = child.clone();
+        mismatched.header.parent_hash = [0xff; 32];
+        assert!(!protocol.record_block(&mismatched));
+        assert!(protocol.record_block(&child));
+    }
+
+    #[test]
+    fn canonical_block_transaction_is_queryable_by_hash() {
+        let mut protocol = protocol();
+        let transaction = Tx {
+            chain_id: CHAIN_ID,
+            from: "0x1111111111111111111111111111111111111111".to_string(),
+            nonce: 0,
+            to: "0x2222222222222222222222222222222222222222".to_string(),
+            token_id: 0,
+            value: 1,
+            gas: 1000,
+            fee_quarks: 10,
+            max_fee_per_gas: 1,
+            kind: TxKind::Transfer,
+            valid_after_slot: 0,
+            fee_token_id: 0,
+            data: String::new(),
+            signature_hex: String::new(),
+        };
+        let transaction_hash = transaction.hash().unwrap();
+        let block = Block::new(
+            0,
+            BlockKind::Validator,
+            ZERO_HASH,
+            Some("val-test".to_string()),
+            1,
+            vec![transaction],
+            1000,
+            ProtocolData {
+                missed_proposer: None,
+                fees_burned: 10,
+            },
+        )
+        .unwrap();
+        assert!(protocol.record_block(&block));
+
+        let response = protocol.handle_jsonrpc(
+            json!(1),
+            "eth_getTransactionByHash",
+            &json!([format_hash(&transaction_hash)]),
+        );
+        assert_eq!(
+            response["result"]["hash"],
+            json!(format_hash(&transaction_hash))
+        );
     }
 }

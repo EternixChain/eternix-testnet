@@ -1,5 +1,6 @@
 mod app;
 mod config;
+mod consensus_hash;
 mod leader_selection;
 mod models;
 mod p2p;

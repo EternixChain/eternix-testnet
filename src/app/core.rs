@@ -43,10 +43,11 @@ impl Protocol {
                 cooldown_until_epoch: None,
             });
             if local_validator_bootstrap {
+                let ticket_id = deterministic_ticket_id(id);
                 tickets.push(Ticket {
-                    id: 1,
+                    id: ticket_id,
                     owner: id.clone(),
-                    bucket: 2,
+                    bucket: ((ticket_id % 254) as u8) + 2,
                     muted: false,
                     dead: false,
                     retiring: false,
@@ -61,7 +62,6 @@ impl Protocol {
             state: ProtocolState {
                 slot: 0,
                 slot_started: Instant::now(),
-                prev_hash: [0; 32],
                 validators,
                 tickets,
                 mempool: Default::default(),
@@ -85,6 +85,7 @@ impl Protocol {
                 epoch_total_slots: 0,
                 mode: Mode::Normal,
                 current_leader: "protocol".to_string(),
+                current_ticket_id: ZERO_TICKET_ID,
                 exec_status: ExecStatus::Idle,
                 current_result: None,
                 nonce_tracker: HashMap::new(),
@@ -111,14 +112,12 @@ impl Protocol {
                 retire_finalize: Default::default(),
                 reward_unlocks: Default::default(),
                 raw_txs: HashMap::new(),
-                raw_tx_pending: Default::default(),
-                block_transactions: HashMap::new(),
                 blocks: HashMap::new(),
                 block_hash_to_number: HashMap::new(),
             },
             p2p,
         };
-        this.state.current_leader = this.select_leader();
+        (this.state.current_leader, this.state.current_ticket_id) = this.select_leader();
         this.state.exec_status = ExecStatus::Executing;
         this.bootstrap_accounts(&cfg.genesis_path);
         this.recompute_base_reward_per_block();
@@ -132,8 +131,11 @@ impl Protocol {
         self.maybe_resync_slot_from_anchor();
 
         while self.state.slot_started.elapsed() >= Duration::from_millis(SLOT_MS) {
-            self.finish_slot();
-            self.start_next_slot();
+            if self.finish_slot() {
+                self.start_next_slot();
+            } else {
+                break;
+            }
         }
 
         if self.state.slot_started.elapsed() >= Duration::from_millis(LEADER_DEADLINE_MS) {
@@ -154,12 +156,12 @@ impl Protocol {
             .nonce_tracker
             .insert(from.clone(), nonce.saturating_add(1));
         let kind = if self.rng.gen_bool(0.2) {
-            "contract"
+            TxKind::Contract
         } else {
-            "transfer"
+            TxKind::Transfer
         };
         let tx = Tx {
-            chain_id: 1162,
+            chain_id: CHAIN_ID,
             from,
             nonce,
             to: "0x0000000000000000000000000000000000000000".to_string(),
@@ -174,7 +176,7 @@ impl Protocol {
             data: String::new(),
             signature_hex: String::new(),
         };
-        if self.p2p.mark_seen(tx_id(&tx)) {
+        if tx.hash().is_some_and(|hash| self.p2p.mark_seen(hash)) {
             if gossip {
                 self.p2p.broadcast_tx(&tx);
             }
@@ -207,13 +209,16 @@ impl Protocol {
         &mut self,
         validator_id: &str,
         value: u128,
-        kind: &'static str,
+        kind: TxKind,
         nonce: Option<u64>,
         _gas_limit: Option<u64>,
         _max_fee_per_gas: Option<u64>,
         signature_hex: Option<String>,
     ) -> Value {
-        if kind != "walletToVault" && kind != "vaultToWallet" && kind != "buyTicket" {
+        if !matches!(
+            kind,
+            TxKind::WalletToVault | TxKind::VaultToWallet | TxKind::BuyTicket
+        ) {
             return json!({"ok": false, "error": "invalid validator system tx type"});
         }
         if value == 0 {
@@ -249,8 +254,8 @@ impl Protocol {
 
         // Fixed-fee validator system txs make vault/ticket flows predictable during PBM bootstrap.
         let required_owner_balance = match kind {
-            "walletToVault" => value.saturating_add(fee_quarks as u128),
-            "buyTicket" => TICKET_COST_QUARKS
+            TxKind::WalletToVault => value.saturating_add(fee_quarks as u128),
+            TxKind::BuyTicket => TICKET_COST_QUARKS
                 .saturating_mul(value)
                 .saturating_add(fee_quarks as u128),
             _ => fee_quarks as u128,
@@ -258,7 +263,7 @@ impl Protocol {
         if !self.can_pay_fee(&owner_account, TOKEN_ETX_ID, required_owner_balance) {
             return json!({"ok": false, "error": "insufficient validator account balance"});
         }
-        if kind == "vaultToWallet" {
+        if kind == TxKind::VaultToWallet {
             let vault_minimum = self.validator_vault_minimum_quarks(validator_id);
             let can_withdraw = value <= self.validator_withdrawable_vault_quarks(validator_id);
             if !can_withdraw {
@@ -276,7 +281,7 @@ impl Protocol {
             Some(sig) => sig,
             None => {
                 let Some(sig) = self.derive_signature_for_sender(
-                    1162,
+                    CHAIN_ID,
                     &owner_account,
                     nonce,
                     validator_id,
@@ -286,7 +291,7 @@ impl Protocol {
                     max_fee_per_gas,
                     TOKEN_ETX_ID,
                     "",
-                    kind,
+                    kind.as_str(),
                 ) else {
                     return json!({"ok": false, "error": "cannot derive signature for validator account"});
                 };
@@ -295,7 +300,7 @@ impl Protocol {
         };
 
         let tx = Tx {
-            chain_id: 1162,
+            chain_id: CHAIN_ID,
             from: owner_account.clone(),
             nonce,
             to: validator_id.to_string(),
@@ -317,32 +322,32 @@ impl Protocol {
         self.state
             .nonce_tracker
             .insert(owner_account.clone(), nonce.saturating_add(1));
-        if self.p2p.mark_seen(tx_hash.clone()) {
+        if self.p2p.mark_seen(tx_hash) {
             self.p2p.broadcast_tx(&accepted_tx);
         }
 
-        if kind == "buyTicket" {
+        if kind == TxKind::BuyTicket {
             json!({
                 "ok": true,
-                "tx_hash": tx_hash,
+                "tx_hash": format_hash(&tx_hash),
                 "validator_id": validator_id,
                 "account": owner_account,
                 "count": value,
                 "ticket_cost_quarks": TICKET_COST_QUARKS.saturating_mul(value),
                 "fee_quarks": fee_quarks,
                 "valid_after_slot": valid_after_slot,
-                "tx_type": kind
+                "tx_type": kind.as_str()
             })
         } else {
             json!({
                 "ok": true,
-                "tx_hash": tx_hash,
+                "tx_hash": format_hash(&tx_hash),
                 "validator_id": validator_id,
                 "account": owner_account,
                 "amount_quarks": value,
                 "fee_quarks": fee_quarks,
                 "valid_after_slot": valid_after_slot,
-                "tx_type": kind
+                "tx_type": kind.as_str()
             })
         }
     }
@@ -366,7 +371,7 @@ impl Protocol {
                 .mempool
                 .iter()
                 .chain(self.state.pbm_pool.iter())
-                .filter(|tx| tx.kind == "registerValidator")
+                .filter(|tx| tx.kind == TxKind::RegisterValidator)
                 .filter_map(|tx| decode_register_validator_data(&tx.data))
                 .any(|(pending_pubkey, _)| pending_pubkey == validator_pubkey)
         {
@@ -397,7 +402,7 @@ impl Protocol {
             Some(sig) => sig,
             None => {
                 let Some(sig) = self.derive_signature_for_sender(
-                    1162,
+                    CHAIN_ID,
                     &from,
                     nonce,
                     &validator_id,
@@ -416,7 +421,7 @@ impl Protocol {
         };
 
         let tx = Tx {
-            chain_id: 1162,
+            chain_id: CHAIN_ID,
             from: from.clone(),
             nonce,
             to: validator_id.clone(),
@@ -425,7 +430,7 @@ impl Protocol {
             gas: gas_limit,
             fee_quarks,
             max_fee_per_gas,
-            kind: "registerValidator",
+            kind: TxKind::RegisterValidator,
             valid_after_slot: 0,
             fee_token_id: TOKEN_ETX_ID,
             data,
@@ -438,13 +443,13 @@ impl Protocol {
         self.state
             .nonce_tracker
             .insert(from.clone(), nonce.saturating_add(1));
-        if self.p2p.mark_seen(tx_hash.clone()) {
+        if self.p2p.mark_seen(tx_hash) {
             self.p2p.broadcast_tx(&accepted_tx);
         }
 
         json!({
             "ok": true,
-            "tx_hash": tx_hash,
+            "tx_hash": format_hash(&tx_hash),
             "validator_id": validator_id,
             "operator": from,
             "reward_address": reward_address,
@@ -528,7 +533,7 @@ impl Protocol {
                 tx_type,
                 signature_hex,
             } => {
-                if chain_id != 1162 {
+                if chain_id != CHAIN_ID {
                     return json!({"ok": false, "error": "invalid chain_id"});
                 }
                 if tx_type != "normal_transfer" {
@@ -563,13 +568,10 @@ impl Protocol {
                         signed
                     }
                 };
-                self.state
-                    .nonce_tracker
-                    .insert(from.clone(), nonce.saturating_add(1));
                 let fee_quarks = gas_limit.saturating_mul(max_fee_per_gas);
                 let tx = Tx {
                     chain_id,
-                    from,
+                    from: from.clone(),
                     nonce,
                     to,
                     token_id,
@@ -577,18 +579,23 @@ impl Protocol {
                     gas: gas_limit,
                     fee_quarks,
                     max_fee_per_gas,
-                    kind: "transfer",
+                    kind: TxKind::Transfer,
                     valid_after_slot: 0,
                     fee_token_id,
                     data,
                     signature_hex: sig,
                 };
-                let tx_hash = tx_id(&tx);
-                if self.p2p.mark_seen(tx_hash.clone()) {
+                let Some(tx_hash) = tx.hash() else {
+                    return json!({"ok": false, "error": "transaction cannot be canonically encoded"});
+                };
+                self.state
+                    .nonce_tracker
+                    .insert(from.clone(), nonce.saturating_add(1));
+                if self.p2p.mark_seen(tx_hash) {
                     self.p2p.broadcast_tx(&tx);
                 }
                 self.state.mempool.push_back(tx);
-                json!({"ok": true, "tx_hash": tx_hash, "fee_quarks": fee_quarks})
+                json!({"ok": true, "tx_hash": format_hash(&tx_hash), "fee_quarks": fee_quarks})
             }
             RpcRequest::BuyTicket {
                 validator_id,
@@ -598,7 +605,7 @@ impl Protocol {
             } => self.enqueue_validator_system_tx(
                 &validator_id,
                 count as u128,
-                "buyTicket",
+                TxKind::BuyTicket,
                 nonce,
                 None,
                 None,
@@ -627,7 +634,7 @@ impl Protocol {
             } => self.enqueue_validator_system_tx(
                 &validator_id,
                 amount_quarks,
-                "walletToVault",
+                TxKind::WalletToVault,
                 nonce,
                 gas_limit,
                 max_fee_per_gas,
@@ -643,7 +650,7 @@ impl Protocol {
             } => self.enqueue_validator_system_tx(
                 &validator_id,
                 amount_quarks,
-                "vaultToWallet",
+                TxKind::VaultToWallet,
                 nonce,
                 gas_limit,
                 max_fee_per_gas,

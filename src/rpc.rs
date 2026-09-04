@@ -6,6 +6,8 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
+use crate::consensus_hash::CHAIN_ID;
+
 pub struct RpcEnvelope {
     pub req: RpcRequest,
     pub reply: Sender<Value>,
@@ -170,7 +172,10 @@ fn parse_rpc_request(v: &Value) -> Result<RpcRequest, String> {
     let p = v.get("params").cloned().unwrap_or_else(|| json!({}));
     match method {
         "send_tx" => Ok(RpcRequest::SendTx {
-            chain_id: p.get("chain_id").and_then(|x| x.as_u64()).unwrap_or(1162),
+            chain_id: p
+                .get("chain_id")
+                .and_then(|x| x.as_u64())
+                .unwrap_or(CHAIN_ID),
             from: p
                 .get("from")
                 .and_then(|x| x.as_str())

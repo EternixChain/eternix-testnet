@@ -1,27 +1,8 @@
 use super::*;
 
-pub(super) fn hash_bytes(input: &[u8]) -> [u8; 32] {
-    let mut h = Keccak256::new();
-    h.update(input);
-    let out = h.finalize();
-    let mut arr = [0_u8; 32];
-    arr.copy_from_slice(&out[..32]);
-    arr
-}
-
-pub(super) fn block_hash_bytes(block_number: u64) -> [u8; 32] {
-    // Block hashes are currently synthetic but centralized so consensus and RPC use identical bytes.
-    hash_bytes(format!("block:{}", block_number).as_bytes())
-}
-
-pub(super) fn decode_block_hash(hash: &str) -> Option<[u8; 32]> {
-    let bytes = hex::decode(hash.strip_prefix("0x").unwrap_or(hash)).ok()?;
-    bytes.try_into().ok()
-}
-
 pub(super) fn deterministic_ticket_id(validator_id: &str) -> u64 {
     // Discovered legacy validators need stable synthetic ticket IDs across peers.
-    let h = hash_bytes(validator_id.as_bytes());
+    let h = hash_with_domain(LEGACY_TICKET_ID_DOMAIN, validator_id.as_bytes());
     let mut arr = [0_u8; 8];
     arr.copy_from_slice(&h[..8]);
     u64::from_be_bytes(arr)
@@ -35,27 +16,22 @@ pub(super) fn unix_ms_now() -> u128 {
 }
 
 pub(super) fn encode_history_snapshot(state: &ProtocolState) -> String {
-    // History snapshots are deliberately compact UDP payloads used for bootstrapping and later corrections.
+    // Full canonical blocks are required so a joining node can recompute hashes and parent linkage.
     let mut parts = vec![format!(
         "HIST|{}|{}",
         state.epoch_validator_blocks, state.epoch_total_slots
     )];
-    for h in state.history.iter().take(64) {
-        let kind = match h.kind {
-            BlockKind::Validator => "validator",
-            BlockKind::ProtocolMiss => "protocol_miss",
-            BlockKind::ProtocolCollision => "protocol_collision",
-            BlockKind::ProtocolNoTickets => "protocol_notickets",
-        };
-        parts.push(format!(
-            "{}:{}:{}:{}:{}:{}",
-            h.slot, h.leader, kind, h.tx_count, h.gas_used, h.fees_burned
-        ));
+    let mut blocks: Vec<&Block> = state.blocks.values().collect();
+    blocks.sort_by_key(|block| block.slot());
+    for block in blocks {
+        if let Some(bytes) = block.wire_bytes() {
+            parts.push(hex::encode(bytes));
+        }
     }
     parts.join("|")
 }
 
-pub(super) fn parse_history_snapshot(msg: &str) -> Option<(u64, u64, Vec<SlotResult>)> {
+pub(super) fn parse_history_snapshot(msg: &str) -> Option<(u64, u64, Vec<Block>)> {
     let p: Vec<&str> = msg.split('|').collect();
     if p.len() < 3 || p[0] != "HIST" {
         return None;
@@ -64,41 +40,10 @@ pub(super) fn parse_history_snapshot(msg: &str) -> Option<(u64, u64, Vec<SlotRes
     let ets: u64 = p[2].parse().ok()?;
     let mut out = vec![];
     for chunk in p.iter().skip(3) {
-        let f: Vec<&str> = chunk.split(':').collect();
-        if f.len() != 6 {
-            continue;
-        }
-        let kind = match f[2] {
-            "validator" => BlockKind::Validator,
-            "protocol_miss" => BlockKind::ProtocolMiss,
-            "protocol_collision" => BlockKind::ProtocolCollision,
-            "protocol_notickets" => BlockKind::ProtocolNoTickets,
-            _ => continue,
-        };
-        let slot = match f[0].parse() {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-        let tx_count = match f[3].parse() {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-        let gas_used = match f[4].parse() {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-        let fees_burned = match f[5].parse() {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-        out.push(SlotResult {
-            slot,
-            leader: f[1].to_string(),
-            kind,
-            tx_count,
-            gas_used,
-            fees_burned,
-        });
+        let block = hex::decode(chunk)
+            .ok()
+            .and_then(|bytes| Block::from_wire_bytes(&bytes))?;
+        out.push(block);
     }
     Some((evb, ets, out))
 }
@@ -342,7 +287,7 @@ pub(super) fn derive_epoch_seed(epoch_index: u64) -> [u8; 32] {
         let mut data = Vec::new();
         data.extend_from_slice(&seed);
         data.extend_from_slice(&i.to_be_bytes());
-        seed = hash_bytes(&data);
+        seed = hash_with_domain(EPOCH_SEED_DOMAIN, &data);
     }
     seed
 }
@@ -428,20 +373,6 @@ pub(super) fn to_hex_qty_u128(v: u128) -> String {
     format!("0x{:x}", v)
 }
 
-pub(super) fn keccak256(bytes: &[u8]) -> [u8; 32] {
-    let mut h = Keccak256::new();
-    h.update(bytes);
-    let out = h.finalize();
-    let mut arr = [0u8; 32];
-    arr.copy_from_slice(&out);
-    arr
-}
-
-pub(super) fn keccak256_hex_bytes(raw_hex: &str) -> [u8; 32] {
-    let bytes = hex::decode(raw_hex.trim_start_matches("0x")).unwrap_or_default();
-    keccak256(&bytes)
-}
-
 pub(super) fn decode_raw_eip1559_tx(raw_hex: &str) -> Option<Tx> {
     let raw = raw_hex.trim_start_matches("0x");
     let bytes = hex::decode(raw).ok()?;
@@ -510,7 +441,7 @@ pub(super) fn decode_raw_eip1559_tx(raw_hex: &str) -> Option<Tx> {
         gas: gas_limit,
         fee_quarks: fee,
         max_fee_per_gas,
-        kind: "transfer",
+        kind: TxKind::Transfer,
         valid_after_slot: 0,
         fee_token_id: 0,
         data: data_hex,
@@ -552,7 +483,7 @@ pub(super) fn decode_raw_legacy_tx(raw_hex: &str) -> Option<Tx> {
     let (chain_id, parity, eip155) = if v >= 35 {
         ((v - 35) / 2, (v - 35) % 2, true)
     } else if v == 27 || v == 28 {
-        (1162_u64, v - 27, false)
+        (CHAIN_ID, v - 27, false)
     } else {
         return None;
     };
@@ -592,7 +523,7 @@ pub(super) fn decode_raw_legacy_tx(raw_hex: &str) -> Option<Tx> {
         gas: gas_limit,
         fee_quarks: fee,
         max_fee_per_gas: gas_price,
-        kind: "transfer",
+        kind: TxKind::Transfer,
         valid_after_slot: 0,
         fee_token_id: 0,
         data: data_hex,
@@ -696,12 +627,12 @@ pub(super) fn extract_raw_signature_parts(
     ))
 }
 
-pub(super) fn tx_json_by_hash(raw_txs: &HashMap<String, RawTxRecord>, h: &str) -> Option<Value> {
+pub(super) fn tx_json_by_hash(raw_txs: &HashMap<Hash, RawTxRecord>, h: &Hash) -> Option<Value> {
     let r = raw_txs.get(h)?;
     let pending = r.block_number.is_none();
     let is_type2 = r.tx_type == "0x2";
     Some(json!({
-        "hash": r.hash,
+        "hash": format_hash(&r.hash),
         "from": r.from,
         "to": r.to,
         "nonce": to_hex_qty(r.nonce),
@@ -719,7 +650,7 @@ pub(super) fn tx_json_by_hash(raw_txs: &HashMap<String, RawTxRecord>, h: &str) -
         "value": to_hex_qty_u128(r.value.saturating_mul(WEI_PER_QUARK as u128)),
         "input": r.input,
         "blockNumber": if pending { Value::Null } else { json!(r.block_number.map(to_hex_qty).unwrap_or_default()) },
-        "blockHash": if pending { Value::Null } else { json!(r.block_hash) },
+        "blockHash": if pending { Value::Null } else { json!(r.block_hash.as_ref().map(format_hash)) },
         "transactionIndex": if pending { Value::Null } else { json!(r.tx_index.map(to_hex_qty).unwrap_or_default()) }
     }))
 }

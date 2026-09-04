@@ -5,8 +5,10 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Cell, Gauge, Paragraph, Row, Table, Wrap};
 
 use crate::app::Protocol;
+use crate::consensus_hash::short_hash;
 use crate::models::{
-    BlockKind, FINALITY_WINDOW_SLOTS, Mode, NodeMode, SLOT_MS, SUB_EPOCH_SLOTS, ValidatorState,
+    BlockKind, FINALITY_WINDOW_SLOTS, Mode, NodeMode, SLOT_MS, SUB_EPOCH_SLOTS, TxKind,
+    ValidatorState,
 };
 
 pub fn render(frame: &mut Frame, app: &Protocol) {
@@ -143,7 +145,7 @@ fn render_slot_panel(frame: &mut Frame, app: &Protocol, area: ratatui::layout::R
     let ratio = (elapsed as f64 / SLOT_MS as f64).clamp(0.0, 1.0);
 
     let (result, result_style) = if let Some(r) = &st.current_result {
-        match r.kind {
+        match r.kind() {
             BlockKind::Validator => (
                 "Validator block".to_string(),
                 Style::default().fg(Color::Green),
@@ -165,8 +167,16 @@ fn render_slot_panel(frame: &mut Frame, app: &Protocol, area: ratatui::layout::R
         ("Pending".to_string(), Style::default().fg(Color::Gray))
     };
 
-    let tx = st.current_result.as_ref().map(|r| r.tx_count).unwrap_or(0);
-    let gas = st.current_result.as_ref().map(|r| r.gas_used).unwrap_or(0);
+    let tx = st
+        .current_result
+        .as_ref()
+        .map(|r| r.tx_count())
+        .unwrap_or(0);
+    let gas = st
+        .current_result
+        .as_ref()
+        .map(|r| r.gas_used())
+        .unwrap_or(0);
     let mode = match st.mode {
         Mode::Normal => "NORMAL",
         Mode::Pbm => "PBM",
@@ -253,9 +263,9 @@ fn render_rewards_panel(frame: &mut Frame, app: &Protocol, area: ratatui::layout
     let mut subepoch_total = 0_u64;
     let mut subepoch_validator = 0_u64;
     for h in st.history.iter() {
-        if h.slot >= sub_epoch_start {
+        if h.slot() >= sub_epoch_start {
             subepoch_total += 1;
-            if h.kind == BlockKind::Validator {
+            if h.kind() == BlockKind::Validator {
                 subepoch_validator += 1;
             }
         }
@@ -362,15 +372,16 @@ fn render_history_panel(frame: &mut Frame, app: &Protocol, area: ratatui::layout
     let st = &app.state;
     let visible_rows = area.height.saturating_sub(3).min(50) as usize;
     let rows = st.history.iter().take(visible_rows).map(|h| {
-        let symbol = match h.kind {
+        let symbol = match h.kind() {
             BlockKind::Validator => "✓",
             BlockKind::ProtocolMiss => "P(miss)",
             BlockKind::ProtocolCollision => "P(coll)",
             BlockKind::ProtocolNoTickets => "P(none)",
         };
         Row::new(vec![
-            Cell::from(h.slot.to_string()),
-            Cell::from(h.leader.clone()),
+            Cell::from(h.slot().to_string()),
+            Cell::from(short_hash(&h.hash())),
+            Cell::from(h.leader().to_string()),
             Cell::from(symbol),
         ])
     });
@@ -380,11 +391,15 @@ fn render_history_panel(frame: &mut Frame, app: &Protocol, area: ratatui::layout
             rows,
             [
                 Constraint::Length(8),
+                Constraint::Length(18),
                 Constraint::Length(16),
                 Constraint::Min(10),
             ],
         )
-        .header(Row::new(vec!["slot", "leader", "result"]).style(Style::default().fg(Color::Cyan)))
+        .header(
+            Row::new(vec!["slot", "hash", "leader", "result"])
+                .style(Style::default().fg(Color::Cyan)),
+        )
         .block(Block::default().title("Slot History").borders(Borders::ALL)),
         area,
     );
@@ -392,24 +407,40 @@ fn render_history_panel(frame: &mut Frame, app: &Protocol, area: ratatui::layout
 
 fn render_mempool_panel(frame: &mut Frame, app: &Protocol, area: ratatui::layout::Rect) {
     let st = &app.state;
-    let transfer = st.mempool.iter().filter(|tx| tx.kind == "transfer").count();
-    let contract = st.mempool.iter().filter(|tx| tx.kind == "contract").count();
+    let transfer = st
+        .mempool
+        .iter()
+        .filter(|tx| tx.kind == TxKind::Transfer)
+        .count();
+    let contract = st
+        .mempool
+        .iter()
+        .filter(|tx| tx.kind == TxKind::Contract)
+        .count();
     let system = st
         .mempool
         .iter()
         .filter(|tx| {
             matches!(
-                tx.kind,
+                tx.kind.as_str(),
                 "system" | "registerValidator" | "buyTicket" | "walletToVault" | "vaultToWallet"
             )
         })
         .count();
-    let last_tx = st.current_result.as_ref().map(|r| r.tx_count).unwrap_or(0);
-    let last_gas = st.current_result.as_ref().map(|r| r.gas_used).unwrap_or(0);
+    let last_tx = st
+        .current_result
+        .as_ref()
+        .map(|r| r.tx_count())
+        .unwrap_or(0);
+    let last_gas = st
+        .current_result
+        .as_ref()
+        .map(|r| r.gas_used())
+        .unwrap_or(0);
     let last_fees = st
         .current_result
         .as_ref()
-        .map(|r| r.fees_burned)
+        .map(|r| r.fees_burned())
         .unwrap_or(0);
 
     frame.render_widget(
@@ -454,7 +485,7 @@ fn render_liveness_bar(frame: &mut Frame, app: &Protocol, area: ratatui::layout:
     };
     let mut recent = String::new();
     for h in st.history.iter().take(18) {
-        recent.push_str(match h.kind {
+        recent.push_str(match h.kind() {
             BlockKind::Validator => "✓ ",
             _ => "P ",
         });

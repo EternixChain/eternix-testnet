@@ -47,6 +47,7 @@ Planned:
 - Ticket-weighted bucket selection and deterministic scoring
 - Same-slot collision neutralization to protocol block
 - Protocol block fallback for missed leader and no eligible tickets
+- Canonical Keccak-256 block headers and ordered transaction commitments
 - Separate PBM queue with delayed validity and deterministic inclusion
 - Fee burning and burn-offset accumulator accounting
 - Basic validator miss/offense tracking and state transitions
@@ -307,6 +308,8 @@ The vault and ticket transactions are gossiped to peers. Once the ticket is acti
   - macOS: Untested
 
 ## Documentation
+
+The current canonical block-header and transaction commitment format is documented in [`docs/consensus-hashing.md`](docs/consensus-hashing.md).
 
 Protocol specifications and docs will be published at:
 

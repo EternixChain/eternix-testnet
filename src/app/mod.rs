@@ -12,11 +12,12 @@ use rlp::{Rlp, RlpStream};
 use serde_json::{Value, json};
 use sha3::{Digest, Keccak256};
 
-use crate::leader_selection::{historical_block_slot, select_leader_owner};
+use crate::consensus_hash::*;
+use crate::leader_selection::select_leader_ticket;
 use crate::models::*;
-use crate::p2p::{P2p, encode_slot_result, parse_hello, parse_slot_result, parse_tx_msg, tx_id};
+use crate::p2p::{P2p, encode_block, parse_block, parse_hello, parse_tx_msg};
 use crate::rpc::RpcRequest;
-const GENESIS_EPOCH_SEED: [u8; 32] = [0x45; 32];
+const GENESIS_EPOCH_SEED: Hash = [0x45; 32];
 const TOKEN_ETX_ID: u64 = 0;
 const TICKET_COST_QUARKS: u128 = 10_000_000_000_000;
 const INITIAL_VALIDATOR_VAULT_QUARKS: u128 = 500_000_000_000_000;

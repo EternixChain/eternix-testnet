@@ -22,11 +22,11 @@ impl Protocol {
                 if let Some(vid) = hello.validator_id {
                     self.state.validator_peers.insert(vid, peer_addr);
                 }
-                // Send both history and state because late-start validator nodes need executed vault/ticket state.
-                let snap = encode_history_snapshot(&self.state);
-                self.p2p.send_to(&snap, peer_addr);
+                // Send state first so the receiver can verify historical proposer/ticket selection.
                 let state_snap = encode_state_snapshot(&self.state);
                 self.p2p.send_to(&state_snap, peer_addr);
+                let snap = encode_history_snapshot(&self.state);
+                self.p2p.send_to(&snap, peer_addr);
                 if !self.state.bootstrapped_from_peer
                     && matches!(hello.mode.as_str(), "standard" | "validator")
                 {
@@ -42,21 +42,28 @@ impl Protocol {
                     self.state.epoch_validator_blocks = epoch_validator_blocks;
                     self.state.epoch_total_slots = epoch_total_slots;
                     self.state.history.clear();
-                    entries.sort_by_key(|e| std::cmp::Reverse(e.slot));
-                    for e in entries.into_iter().take(64) {
-                        self.record_block(&e);
-                        self.state.history.push_back(e);
+                    entries.sort_by_key(Block::slot);
+                    for block in entries {
+                        if self.validate_block_consensus_role(&block) && self.record_block(&block) {
+                            self.state.history.push_front(block);
+                            if self.state.history.len() > 50 {
+                                self.state.history.pop_back();
+                            }
+                        }
                     }
                     self.rebuild_liveness_from_history();
-                    self.state.current_leader = self.select_leader();
+                    (self.state.current_leader, self.state.current_ticket_id) =
+                        self.select_leader();
                     self.state.history_synced = true;
                     self.state
                         .events
                         .push_front("history synced from peer".to_string());
                 } else {
-                    entries.sort_by_key(|e| e.slot);
+                    entries.sort_by_key(Block::slot);
                     for entry in entries {
-                        if entry.kind == BlockKind::Validator {
+                        if entry.kind() == BlockKind::Validator
+                            && self.validate_block_consensus_role(&entry)
+                        {
                             // After bootstrap, peer history is only trusted for positive validator-block corrections.
                             self.merge_slot_result(entry);
                         }
@@ -68,15 +75,15 @@ impl Protocol {
                 self.merge_state_snapshot(snapshot);
                 continue;
             }
-            if let Some(res) = parse_slot_result(&msg) {
+            if let Some(res) = parse_block(&msg) {
                 if self.accept_remote_slot_result(&res) {
-                    if res.slot < self.state.slot {
+                    if res.slot() < self.state.slot {
                         // Late validator blocks can replace provisional misses within the retained history window.
                         self.merge_slot_result(res);
                     } else {
                         self.state
                             .remote_slot_results
-                            .entry(res.slot)
+                            .entry(res.slot())
                             .or_insert(res);
                     }
                 }
@@ -130,6 +137,10 @@ impl Protocol {
         if target_slot <= self.state.slot {
             return;
         }
+        if self.canonical_parent_hash(target_slot).is_none() {
+            // A later hello will retry after canonical history supplies the predecessor block.
+            return;
+        }
         self.state.slot = target_slot;
         // The wall-clock anchor lets the node catch up to peer slot numbers without persisting local time state.
         self.state.epoch_index = target_slot / (SUB_EPOCH_SLOTS * EPOCH_SUB_EPOCHS);
@@ -138,7 +149,7 @@ impl Protocol {
         self.state.slot_started = Instant::now() - Duration::from_millis(slot_elapsed_ms);
         self.state.anchor_time = UNIX_EPOCH + Duration::from_millis(slot_started_unix_ms as u64)
             - Duration::from_millis(slot.saturating_mul(SLOT_MS));
-        self.state.current_leader = self.select_leader();
+        (self.state.current_leader, self.state.current_ticket_id) = self.select_leader();
         self.state.bootstrapped_from_peer = true;
         self.state
             .events
@@ -152,18 +163,11 @@ impl Protocol {
         if let Ok(since_anchor) = now.duration_since(self.state.anchor_time) {
             let target_slot = since_anchor.as_millis() as u64 / SLOT_MS;
             if target_slot > self.state.slot + 1 {
-                // Resync skips missed local ticks instead of replaying every elapsed slot after a pause.
-                self.state.slot = target_slot;
-                self.state.epoch_index = target_slot / (SUB_EPOCH_SLOTS * EPOCH_SUB_EPOCHS);
-                self.state.sub_epoch_index = target_slot / SUB_EPOCH_SLOTS;
-                self.state.epoch_seed = derive_epoch_seed(self.state.epoch_index);
-                let elapsed_ms = (since_anchor.as_millis() as u64) % SLOT_MS;
-                self.state.slot_started = Instant::now() - Duration::from_millis(elapsed_ms);
-                self.state.current_leader = self.select_leader();
-                self.state.current_result = None;
+                // Force one sequential slot completion per tick until every canonical parent exists.
+                self.state.slot_started = Instant::now() - Duration::from_millis(SLOT_MS);
                 self.state
                     .events
-                    .push_front(format!("slot resync to {}", target_slot));
+                    .push_front(format!("catching up toward slot {}", target_slot));
             }
         }
     }
@@ -243,8 +247,6 @@ impl Protocol {
             }
             return;
         }
-        let mut tx = tx;
-        tx.valid_after_slot = 0;
         self.state.mempool.push_back(tx);
     }
 
@@ -343,67 +345,96 @@ impl Protocol {
             for id in ids {
                 self.refresh_validator_activation(&id);
             }
-            self.state.current_leader = self.select_leader();
+            (self.state.current_leader, self.state.current_ticket_id) = self.select_leader();
         }
     }
 
-    pub(super) fn accept_remote_slot_result(&self, result: &SlotResult) -> bool {
-        if result.slot > self.state.slot.saturating_add(1) {
+    pub(super) fn accept_remote_slot_result(&self, result: &Block) -> bool {
+        if !self.validate_block_commitments_and_parent(result) {
             return false;
         }
-        if result.slot < self.state.slot && result.kind != BlockKind::Validator {
+        if result.slot() > self.state.slot.saturating_add(1) {
+            return false;
+        }
+        if result.slot() < self.state.slot && result.kind() != BlockKind::Validator {
             // Past misses/no-ticket results are too weak to import; only validator blocks correct history.
             return false;
         }
-        if result.slot < self.state.slot && result.slot.saturating_add(64) < self.state.slot {
+        if result.slot() < self.state.slot && result.slot().saturating_add(64) < self.state.slot {
             return false;
         }
-        if result.slot == self.state.slot && self.state.current_result.is_some() {
+        if result.slot() == self.state.slot && self.state.current_result.is_some() {
             return false;
         }
-        let expected_leader = if result.slot == self.state.slot {
-            self.state.current_leader.clone()
-        } else {
-            // Validate past/future results with the same historical block hash used for that slot.
-            let eligible: Vec<&Ticket> = self
-                .state
-                .tickets
-                .iter()
-                .filter(|t| !t.dead && !t.muted && self.validator_active(&t.owner))
-                .collect();
-            let Some(historical_block_hash) = self.leader_selection_block_hash(result.slot) else {
-                return false;
-            };
-            select_leader_owner(historical_block_hash, result.slot, &eligible)
-                .unwrap_or_else(|| "protocol".to_string())
+        let Some((expected_leader, _)) = self.expected_leader_for_slot(result.slot()) else {
+            return false;
         };
         if self.state.local_validator_id.as_deref() == Some(expected_leader.as_str())
-            && result.kind != BlockKind::Validator
+            && result.kind() != BlockKind::Validator
         {
             // A local leader should produce its own block rather than accept a peer's provisional miss/PBM result.
             return false;
         }
-        match result.kind {
+        self.validate_block_consensus_role(result)
+            || (result.kind() == BlockKind::Validator
+                && self.accept_late_cooldown_correction(result))
+    }
+
+    pub(super) fn expected_leader_for_slot(&self, slot: u64) -> Option<(String, u64)> {
+        if slot == self.state.slot {
+            return Some((
+                self.state.current_leader.clone(),
+                self.state.current_ticket_id,
+            ));
+        }
+        let eligible: Vec<&Ticket> = self
+            .state
+            .tickets
+            .iter()
+            .filter(|t| !t.dead && !t.muted && self.validator_active(&t.owner))
+            .collect();
+        let historical_block_hash = self.leader_selection_block_hash(slot)?;
+        Some(
+            select_leader_ticket(historical_block_hash, slot, &eligible)
+                .unwrap_or_else(|| ("protocol".to_string(), ZERO_TICKET_ID)),
+        )
+    }
+
+    pub(super) fn validate_block_consensus_role(&self, result: &Block) -> bool {
+        let Some((expected_leader, expected_ticket_id)) =
+            self.expected_leader_for_slot(result.slot())
+        else {
+            return false;
+        };
+        match result.kind() {
             BlockKind::Validator => {
-                (result.leader == expected_leader && expected_leader != "protocol")
-                    || self.accept_late_cooldown_correction(result)
+                result.proposer.as_deref() == Some(expected_leader.as_str())
+                    && result.header.ticket_id == expected_ticket_id
+                    && expected_leader != "protocol"
             }
             BlockKind::ProtocolNoTickets => {
-                expected_leader == "protocol" && result.leader == "protocol"
+                expected_leader == "protocol"
+                    && result.transactions.iter().all(|tx| {
+                        Self::pbm_allowed_kind(tx.kind) && tx.valid_after_slot <= result.slot()
+                    })
             }
             BlockKind::ProtocolMiss => {
-                result.leader == expected_leader && expected_leader != "protocol"
+                result.protocol_data.missed_proposer.as_deref() == Some(expected_leader.as_str())
+                    && expected_leader != "protocol"
             }
             BlockKind::ProtocolCollision => true,
         }
     }
 
-    pub(super) fn accept_late_cooldown_correction(&self, result: &SlotResult) -> bool {
+    pub(super) fn accept_late_cooldown_correction(&self, result: &Block) -> bool {
         // If provisional misses pushed a peer into cooldown, allow a late validator block to repair that state.
-        if result.slot >= self.state.slot {
+        if result.slot() >= self.state.slot {
             return false;
         }
-        let Some(v) = self.state.validators.iter().find(|v| v.id == result.leader) else {
+        let Some(proposer) = result.proposer.as_deref() else {
+            return false;
+        };
+        let Some(v) = self.state.validators.iter().find(|v| v.id == proposer) else {
             return false;
         };
         if v.state != ValidatorState::PunishedCooldown {
@@ -412,6 +443,6 @@ impl Protocol {
         self.state
             .tickets
             .iter()
-            .any(|t| t.owner == result.leader && !t.dead && !t.muted)
+            .any(|t| t.owner == proposer && t.id == result.header.ticket_id && !t.dead && !t.muted)
     }
 }

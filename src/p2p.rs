@@ -3,10 +3,9 @@ use std::io;
 use std::net::{SocketAddr, UdpSocket};
 use std::time::{Duration, Instant};
 
+use crate::consensus_hash::{format_hash, parse_hash};
+use crate::models::{Block, Hash, Tx};
 use anyhow::Result;
-use sha3::{Digest, Keccak256};
-
-use crate::models::{BlockKind, SlotResult, Tx};
 
 #[derive(Clone, Debug)]
 pub struct HelloMsg {
@@ -22,7 +21,7 @@ pub struct HelloMsg {
 pub struct P2p {
     socket: UdpSocket,
     peers: HashSet<SocketAddr>,
-    seen_msgs: HashSet<String>,
+    seen_msgs: HashSet<Hash>,
     last_hello: Instant,
 }
 
@@ -44,7 +43,7 @@ impl P2p {
         self.peers.len()
     }
 
-    pub fn mark_seen(&mut self, id: String) -> bool {
+    pub fn mark_seen(&mut self, id: Hash) -> bool {
         self.seen_msgs.insert(id)
     }
 
@@ -77,27 +76,10 @@ impl P2p {
     }
 
     pub fn broadcast_tx(&self, tx: &Tx) {
-        let id = tx_id(tx);
-        // This prototype uses pipe-delimited UDP messages instead of a stable binary wire format.
-        let msg = format!(
-            "TX|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
-            id,
-            tx.chain_id,
-            tx.from,
-            tx.nonce,
-            tx.to,
-            tx.token_id,
-            tx.value,
-            tx.gas,
-            tx.max_fee_per_gas,
-            tx.fee_quarks,
-            tx.fee_token_id,
-            tx.kind,
-            tx.valid_after_slot,
-            tx.data,
-            tx.signature_hex
-        );
-        self.broadcast_raw(&msg);
+        if let (Some(bytes), Some(hash)) = (tx.canonical_bytes(), tx_id(tx)) {
+            let msg = format!("TX|{}|{}", format_hash(&hash), hex::encode(bytes));
+            self.broadcast_raw(&msg);
+        }
     }
 
     pub fn broadcast_message(&self, msg: &str) {
@@ -161,99 +143,32 @@ pub fn parse_hello(msg: &str) -> Option<HelloMsg> {
     })
 }
 
-pub fn parse_tx_msg(msg: &str) -> Option<(String, Tx)> {
+pub fn parse_tx_msg(msg: &str) -> Option<(Hash, Tx)> {
     let p: Vec<&str> = msg.split('|').collect();
-    if p.len() != 16 || p[0] != "TX" {
+    if p.len() != 3 || p[0] != "TX" {
         return None;
     }
-    let kind = match p[12] {
-        "transfer" => "transfer",
-        "contract" => "contract",
-        "system" => "system",
-        "pbm_tx" => "pbm_tx",
-        "burnTicket" => "burnTicket",
-        "registerValidator" => "registerValidator",
-        "buyTicket" => "buyTicket",
-        "walletToVault" => "walletToVault",
-        "vaultToWallet" => "vaultToWallet",
-        _ => "transfer",
-    };
-    Some((
-        p[1].to_string(),
-        Tx {
-            chain_id: p[2].parse().ok()?,
-            from: p[3].to_string(),
-            nonce: p[4].parse().ok()?,
-            to: p[5].to_string(),
-            token_id: p[6].parse().ok()?,
-            value: p[7].parse().ok()?,
-            gas: p[8].parse().ok()?,
-            max_fee_per_gas: p[9].parse().ok()?,
-            fee_quarks: p[10].parse().ok()?,
-            fee_token_id: p[11].parse().ok()?,
-            kind,
-            valid_after_slot: p[13].parse().ok()?,
-            data: p[14].to_string(),
-            signature_hex: p[15].to_string(),
-        },
-    ))
+    let claimed_hash = parse_hash(p[1])?;
+    let tx = Tx::from_canonical_bytes(&hex::decode(p[2]).ok()?)?;
+    (tx.hash()? == claimed_hash).then_some((claimed_hash, tx))
 }
 
-pub fn tx_id(tx: &Tx) -> String {
-    // The hash includes data/signature so PBM ordering is deterministic for full transaction contents.
-    let raw = format!(
-        "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
-        tx.chain_id,
-        tx.from,
-        tx.nonce,
-        tx.to,
-        tx.token_id,
-        tx.value,
-        tx.gas,
-        tx.max_fee_per_gas,
-        tx.fee_quarks,
-        tx.fee_token_id,
-        tx.kind,
-        tx.valid_after_slot,
-        tx.data,
-        tx.signature_hex
-    );
-    let mut h = Keccak256::new();
-    h.update(raw.as_bytes());
-    hex::encode(h.finalize())
+pub fn tx_id(tx: &Tx) -> Option<Hash> {
+    tx.hash()
 }
 
-pub fn encode_slot_result(result: &SlotResult) -> String {
-    let kind = match result.kind {
-        BlockKind::Validator => "validator",
-        BlockKind::ProtocolMiss => "protocol_miss",
-        BlockKind::ProtocolCollision => "protocol_collision",
-        BlockKind::ProtocolNoTickets => "protocol_notickets",
-    };
+pub fn encode_block(block: &Block) -> String {
     format!(
-        "SLOTRES|{}|{}|{}|{}|{}|{}",
-        result.slot, result.leader, kind, result.tx_count, result.gas_used, result.fees_burned
+        "BLOCK|{}",
+        hex::encode(
+            block
+                .wire_bytes()
+                .expect("locally constructed blocks have valid commitments")
+        )
     )
 }
 
-pub fn parse_slot_result(msg: &str) -> Option<SlotResult> {
-    let p: Vec<&str> = msg.split('|').collect();
-    if p.len() != 7 || p[0] != "SLOTRES" {
-        return None;
-    }
-    let kind = match p[3] {
-        "validator" => BlockKind::Validator,
-        "protocol_miss" => BlockKind::ProtocolMiss,
-        "protocol_collision" => BlockKind::ProtocolCollision,
-        "protocol_notickets" => BlockKind::ProtocolNoTickets,
-        _ => return None,
-    };
-    Some(SlotResult {
-        slot: p[1].parse().ok()?,
-        leader: p[2].to_string(),
-        kind,
-        tx_count: p[4].parse().ok()?,
-        gas_used: p[5].parse().ok()?,
-        fees_burned: p[6].parse().ok()?,
-    })
+pub fn parse_block(msg: &str) -> Option<Block> {
+    let payload = msg.strip_prefix("BLOCK|")?;
+    Block::from_wire_bytes(&hex::decode(payload).ok()?)
 }
