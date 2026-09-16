@@ -116,6 +116,10 @@ impl Protocol {
                 block_hash_to_number: HashMap::new(),
             },
             p2p,
+            #[cfg(test)]
+            test_fail_next_execution: false,
+            #[cfg(test)]
+            test_fail_next_persistence: false,
         };
         (this.state.current_leader, this.state.current_ticket_id) = this.select_leader();
         this.state.exec_status = ExecStatus::Executing;

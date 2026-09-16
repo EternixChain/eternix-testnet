@@ -33,6 +33,12 @@ pub struct Protocol {
     rng: StdRng,
     pub state: ProtocolState,
     pub p2p: P2p,
+    // The production store is intentionally not implemented yet. These hooks prove that the
+    // in-memory transaction boundary discards a complete candidate when a future store rejects it.
+    #[cfg(test)]
+    test_fail_next_execution: bool,
+    #[cfg(test)]
+    test_fail_next_persistence: bool,
 }
 
 mod accounts;

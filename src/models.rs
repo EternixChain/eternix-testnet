@@ -73,7 +73,7 @@ pub enum TxKind {
     BurnTicket,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Validator {
     pub id: String,
     // The account that pays validator system tx fees and owns vault/ticket operations.
@@ -90,7 +90,7 @@ pub struct Validator {
     pub cooldown_until_epoch: Option<u64>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Ticket {
     pub id: u64,
     pub owner: String,
@@ -154,7 +154,7 @@ pub struct Block {
     pub protocol_data: ProtocolData,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Account {
     pub id: String,
     pub private_key_hex: String,
@@ -164,6 +164,7 @@ pub struct Account {
     pub balances: HashMap<u64, u128>,
 }
 
+#[derive(Clone, Debug, PartialEq)]
 pub struct ProtocolState {
     pub slot: u64,
     pub slot_started: Instant,
@@ -225,7 +226,7 @@ pub struct ProtocolState {
     pub block_hash_to_number: HashMap<Hash, u64>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RawTxRecord {
     pub hash: Hash,
     pub raw: String,

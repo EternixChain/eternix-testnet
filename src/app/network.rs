@@ -76,17 +76,21 @@ impl Protocol {
                 continue;
             }
             if let Some(res) = parse_block(&msg) {
-                if self.accept_remote_slot_result(&res) {
-                    if res.slot() < self.state.slot {
-                        // Late validator blocks can replace provisional misses within the retained history window.
-                        self.merge_slot_result(res);
-                    } else {
-                        self.state
-                            .remote_slot_results
-                            .entry(res.slot())
-                            .or_insert(res);
-                    }
-                }
+                // Wire decoding has already recomputed the claimed hash and commitments. Applying
+                // any remote block remains disabled until transaction and producer authentication
+                // have protocol definitions, so no unauthenticated block can alter canonical state.
+                let reason = if !res.transactions.is_empty() {
+                    "remote transaction-bearing block execution is unsupported"
+                } else if res.kind() == BlockKind::Validator {
+                    "remote validator block acceptance is unsupported without block authentication"
+                } else {
+                    "remote protocol block application is unsupported"
+                };
+                self.state.events.push_front(format!(
+                    "rejected remote block {}: {}",
+                    short_hash(&res.hash()),
+                    reason
+                ));
                 continue;
             }
             if let Some((id, tx)) = parse_tx_msg(&msg)

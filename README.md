@@ -310,6 +310,7 @@ The vault and ticket transactions are gossiped to peers. Once the ticket is acti
 ## Documentation
 
 The current canonical block-header and transaction commitment format is documented in [`docs/consensus-hashing.md`](docs/consensus-hashing.md).
+The current local-only atomic linear-tip application boundary and intentionally disabled remote paths are documented in [`docs/atomic-linear-tip.md`](docs/atomic-linear-tip.md).
 
 Protocol specifications and docs will be published at:
 
