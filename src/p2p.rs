@@ -43,6 +43,12 @@ impl P2p {
         self.peers.len()
     }
 
+    /// Exposes the ephemeral bound endpoint to UDP ingress regressions without fixed test ports.
+    #[cfg(test)]
+    pub(crate) fn test_local_addr(&self) -> io::Result<SocketAddr> {
+        self.socket.local_addr()
+    }
+
     pub fn mark_seen(&mut self, id: Hash) -> bool {
         self.seen_msgs.insert(id)
     }

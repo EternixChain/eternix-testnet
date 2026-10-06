@@ -15,9 +15,17 @@ property. It must not be interpreted as crash-safe persistence.
 
 ## Intentionally Disabled Paths
 
-- All remote `BLOCK` messages are decoded and then rejected. Transaction-bearing remote blocks are
-  not executed, remote validator blocks are not accepted because blocks have no authentication, and
-  remote protocol blocks are not applied because miss and collision authorization remain undefined.
+- All inbound `HIST` and `BLOCK` messages, including malformed bodies, are rejected by their framing
+  tag before payload decoding or any stateful handler. Inbound canonical history synchronization is
+  intentionally unavailable: fresh nodes cannot import peer blocks and running nodes cannot use peer
+  history for canonical replacement. Rejection only appends a local diagnostic; canonical state,
+  history, indexes, transaction status, penalties, and synchronization flags are not changed.
+- Transaction-bearing remote blocks are not executed, remote validator blocks are not accepted
+  because blocks have no authentication, and remote protocol blocks are not applied because miss
+  and collision authorization remain undefined.
+- Outbound history snapshot serving remains available for prototype compatibility and is read-only.
+  Existing `HELLO` discovery/timing and `STATE` snapshot behavior are separate prototype mechanisms;
+  they are not authenticated block synchronization or remote transaction replay.
 - Late block replacement is not part of the staged linear-tip path. The existing legacy correction
   helpers remain outside it and have no active P2P ingress.
 - The staged path does not add transaction signature verification, nonce rules, fee validation,

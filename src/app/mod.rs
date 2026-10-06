@@ -15,7 +15,7 @@ use sha3::{Digest, Keccak256};
 use crate::consensus_hash::*;
 use crate::leader_selection::select_leader_ticket;
 use crate::models::*;
-use crate::p2p::{P2p, encode_block, parse_block, parse_hello, parse_tx_msg};
+use crate::p2p::{P2p, encode_block, parse_hello, parse_tx_msg};
 use crate::rpc::RpcRequest;
 const GENESIS_EPOCH_SEED: Hash = [0x45; 32];
 const TOKEN_ETX_ID: u64 = 0;

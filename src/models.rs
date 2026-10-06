@@ -207,7 +207,7 @@ pub struct ProtocolState {
     pub bootstrapped_from_peer: bool,
     pub validator_peers: HashMap<String, SocketAddr>,
     pub remote_slot_results: BTreeMap<u64, Block>,
-    // History sync is only a bootstrap aid; later peer history is treated as correction data.
+    // Legacy sync flag retained for prototype state; disabled HIST/BLOCK ingress must not change it.
     pub history_synced: bool,
     pub liveness_epoch: u64,
     pub liveness_counted_slots: BTreeSet<u64>,

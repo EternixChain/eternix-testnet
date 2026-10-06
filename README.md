@@ -299,6 +299,7 @@ The vault and ticket transactions are gossiped to peers. Once the ticket is acti
 - This is a testnet prototype focused on protocol mechanics and observability.
 - P2P networking, full EVM execution, persistent state DB, and cryptographic transaction validation are not fully implemented in this version.
 - P2P in this version is UDP-based gossip for peer hello and transaction propagation (mempool sync).
+- Inbound canonical history synchronization is intentionally unavailable: `HIST` and `BLOCK` messages are rejected before body decoding, import, or replacement. Outbound history snapshots remain read-only prototype serving; `HELLO`/`STATE` behavior is separate from authenticated block synchronization.
 - Hello gossip is sent immediately at boot and then every 500ms to reduce peer-discovery delay.
 - On startup, a node performs one-time slot bootstrap from peers (`slot` + `slot-start timestamp`) so late joiners align to current network slot.
 - Validator discovery is propagated via hello metadata; validator nodes are added to the local validator registry with one deterministic ticket.
@@ -311,6 +312,8 @@ The vault and ticket transactions are gossiped to peers. Once the ticket is acti
 
 The current canonical block-header and transaction commitment format is documented in [`docs/consensus-hashing.md`](docs/consensus-hashing.md).
 The current local-only atomic linear-tip application boundary and intentionally disabled remote paths are documented in [`docs/atomic-linear-tip.md`](docs/atomic-linear-tip.md).
+The isolated, non-activated native V2 authentication library, independent vector reproduction, and release benchmark are documented in [`docs/native-v2-authentication.md`](docs/native-v2-authentication.md).
+The shared offline native V2 ETX transfer applicator, atomic commit boundary, and producer/replay harness are documented in [`docs/native-v2-transfer-application.md`](docs/native-v2-transfer-application.md).
 
 Protocol specifications and docs will be published at:
 
