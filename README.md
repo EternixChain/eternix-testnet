@@ -314,6 +314,8 @@ The current canonical block-header and transaction commitment format is document
 The current local-only atomic linear-tip application boundary and intentionally disabled remote paths are documented in [`docs/atomic-linear-tip.md`](docs/atomic-linear-tip.md).
 The isolated, non-activated native V2 authentication library, independent vector reproduction, and release benchmark are documented in [`docs/native-v2-authentication.md`](docs/native-v2-authentication.md).
 The shared offline native V2 ETX transfer applicator, atomic commit boundary, and producer/replay harness are documented in [`docs/native-v2-transfer-application.md`](docs/native-v2-transfer-application.md).
+The fixture-only SQLite coordinator, initialization/recovery contract, failure evidence, and release benchmarks are documented in [`docs/durable-fixture-storage.md`](docs/durable-fixture-storage.md).
+The experimental offline anchored native-block adapter, exact codec, atomic tip/state storage, recovery evidence, and retained-history benchmarks are documented in [`docs/stage-4-canonical-storage.md`](docs/stage-4-canonical-storage.md).
 
 Protocol specifications and docs will be published at:
 

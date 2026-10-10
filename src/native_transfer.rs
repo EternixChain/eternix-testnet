@@ -7,6 +7,28 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
+// Test-only phase evidence: count calls, not inferred flags, without changing execution/profile
+// decisions. Thread-local counters isolate parallel tests and are absent from production builds.
+#[cfg(test)]
+pub(crate) mod phase_evidence {
+    use std::cell::Cell;
+    thread_local! { static COUNTS: Cell<(usize, usize)> = const { Cell::new((0, 0)) }; }
+    pub(crate) fn reset() {
+        COUNTS.set((0, 0));
+    }
+    pub(crate) fn counts() -> (usize, usize) {
+        COUNTS.get()
+    }
+    pub(super) fn authentication() {
+        let (a, e) = COUNTS.get();
+        COUNTS.set((a + 1, e));
+    }
+    pub(super) fn execution() {
+        let (a, e) = COUNTS.get();
+        COUNTS.set((a, e + 1));
+    }
+}
+
 use crate::native_transaction::{
     self, Address, AuthenticatedTransaction, AuthenticationContext, ETX_TOKEN_ID, Hash,
     INTRINSIC_GAS, SIGNED_LEN, TRANSFER_FEE_QUARKS, TRANSFER_KIND, authenticate,
@@ -257,6 +279,12 @@ pub struct StagedBody {
 }
 
 impl StagedBody {
+    /// Moves a validated overlay into the isolated durable coordinator without re-execution.
+    /// Kept crate-private so only the coordinator can install after its richer commit contract.
+    pub(crate) fn into_parts(self) -> (TransferState, TransferState, AppliedBody) {
+        (self.base, self.candidate, self.record)
+    }
+
     /// Read-only candidate for producer inspection; it is not installed or committed yet.
     pub fn candidate(&self) -> &TransferState {
         &self.candidate
@@ -301,6 +329,8 @@ pub fn stage_body(
         .iter()
         .enumerate()
         .map(|(index, bytes)| {
+            #[cfg(test)]
+            phase_evidence::authentication();
             authenticate(bytes, context, None).map_err(|error| BodyError {
                 transaction_index: index,
                 cause: TransferError::Authentication(error),
@@ -311,6 +341,8 @@ pub fn stage_body(
     let mut candidate = base.clone();
     let mut outcome = BodyOutcome::default();
     for (index, proof) in proofs.iter().enumerate() {
+        #[cfg(test)]
+        phase_evidence::execution();
         apply_transfer(&mut candidate, &mut outcome, proof, slot).map_err(|cause| BodyError {
             transaction_index: index,
             cause,

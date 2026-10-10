@@ -1,0 +1,8 @@
+/target
+.agent-handoff.md
+AGENTS.md
+native-transaction-auth-design.md
+durable-storage-design.md
+/stage-4-canonical-storage-design.md
+/stage-4-storage-performance-review.md
+/block-authentication-design.md

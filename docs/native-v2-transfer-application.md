@@ -80,6 +80,12 @@ pending storage update but before publishing it. This demonstrates rollback of s
 it is not crash-safe disk persistence. A backend that writes partially or reports an indeterminate
 error after committing cannot satisfy this contract without transactional/recovery work.
 
+The separate [`durable fixture coordinator`](durable-fixture-storage.md) now provides file-backed
+SQLite state/body/index storage for explicit offline fixtures. It reuses this staged executor but
+has a richer Committed/Aborted/RecoveryRequired contract, poisoned publication gates, atomic fixture
+initialization, and explicit synchronized recovery. It does not implement `AtomicBodyStore` or turn
+an uncertain disk outcome into an ordinary applicator error. Its canonical tip remains absent.
+
 There is no architectural blocker for this offline stage. Live integration still requires an
 explicit native state adapter/migration, durable transactional storage, and separately approved
 block validation/activation. The current live state mixes wallet data and pending nonce tracking;

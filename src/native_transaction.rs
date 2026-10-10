@@ -126,6 +126,21 @@ pub struct AuthenticationContext {
 }
 
 impl AuthenticationContext {
+    /// Explicit chain identity for fixture storage metadata; never a production default.
+    pub fn chain_id(&self) -> u64 {
+        self.chain_id
+    }
+
+    /// Caller-approved canonical-genesis identity, preserved unchanged by fixture storage.
+    pub fn network_id(&self) -> Hash {
+        self.network_id
+    }
+
+    /// Native rules identity, independent of local storage schema versions.
+    pub fn native_rules_version(&self) -> u32 {
+        self.native_rules_version
+    }
+
     /// Uses a genesis identity already verified by the caller, without loading or defining genesis.
     pub fn new(chain_id: u64, network_id: Hash, native_rules_version: u32) -> Result<Self, Error> {
         if native_rules_version != NATIVE_RULES_VERSION {

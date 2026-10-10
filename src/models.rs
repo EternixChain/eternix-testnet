@@ -2,6 +2,9 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::net::SocketAddr;
 use std::time::{Instant, SystemTime};
 
+// Share pure commitment types without importing the isolated storage/application coordinator.
+pub use eternix_testnet::block_commitment::{BlockHeader, BlockKind, ProtocolData};
+
 pub const SLOT_MS: u64 = 3000;
 pub const LEADER_DEADLINE_MS: u64 = 2100;
 pub const SUB_EPOCH_SLOTS: u64 = 1200;
@@ -50,14 +53,6 @@ pub enum ExecStatus {
     Executing,
     Posted,
     Missed,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum BlockKind {
-    Validator,
-    ProtocolMiss,
-    ProtocolCollision,
-    ProtocolNoTickets,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -119,30 +114,6 @@ pub struct Tx {
     pub fee_token_id: u64,
     pub data: String,
     pub signature_hex: String,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct BlockHeader {
-    pub protocol_version: u32,
-    pub chain_id: u64,
-    pub slot: u64,
-    pub block_kind: BlockKind,
-    pub parent_hash: Hash,
-    // Validator IDs are represented here by their fixed 32-byte canonical proposer commitment.
-    pub proposer_id: Hash,
-    // Ticket IDs are native u64 values and are serialized big-endian.
-    pub ticket_id: u64,
-    pub transaction_root: Hash,
-    pub state_root: Hash,
-    pub receipts_root: Hash,
-    pub gas_used: u64,
-    pub protocol_data_root: Hash,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ProtocolData {
-    pub missed_proposer: Option<String>,
-    pub fees_burned: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

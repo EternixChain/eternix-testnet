@@ -2,7 +2,16 @@ use std::collections::HashMap;
 use std::sync::LazyLock;
 
 use serde_json::{Value, json};
-use sha3::{Digest, Keccak256};
+// V1 consumes the same pure primitives; its transaction decoder and acceptance rules stay V1.
+use eternix_testnet::block_commitment::ordered_transaction_root;
+pub use eternix_testnet::block_commitment::{
+    BLOCK_HEADER_LEN, EMPTY_RECEIPTS_ROOT, PLACEHOLDER_STATE_ROOT, hash_with_domain, keccak256,
+    proposer_id,
+};
+#[cfg(test)]
+pub use eternix_testnet::block_commitment::{
+    EMPTY_PROTOCOL_DATA_ROOT, EMPTY_TX_ROOT, TX_LIST_DOMAIN,
+};
 
 use crate::models::{Block, BlockHeader, BlockKind, Hash, ProtocolData, Tx, TxKind};
 
@@ -11,41 +20,16 @@ pub const CHAIN_ID: u64 = 1162;
 pub const ZERO_HASH: Hash = [0; 32];
 pub const ZERO_PROPOSER_ID: Hash = [0; 32];
 pub const ZERO_TICKET_ID: u64 = 0;
-pub const PLACEHOLDER_STATE_ROOT: Hash = [0; 32];
 pub const MAX_BLOCK_TRANSACTIONS: usize = 3000;
 pub const MAX_BLOCK_GAS: u64 = 16_000_000;
 
-pub const BLOCK_HEADER_DOMAIN: &[u8] = b"ETERNIX_BLOCK_HEADER_V1";
 pub const TX_DOMAIN: &[u8] = b"ETERNIX_TX_V1";
-pub const TX_LIST_DOMAIN: &[u8] = b"ETERNIX_TX_LIST_V1";
-pub const PROTOCOL_DATA_DOMAIN: &[u8] = b"ETERNIX_PROTOCOL_DATA_V1";
-pub const RECEIPT_LIST_DOMAIN: &[u8] = b"ETERNIX_RECEIPT_LIST_V1";
-pub const PROPOSER_ID_DOMAIN: &[u8] = b"ETERNIX_PROPOSER_ID_V1";
 pub const GENESIS_DOMAIN: &[u8] = b"ETERNIX_GENESIS_V1";
 pub const LEGACY_TICKET_ID_DOMAIN: &[u8] = b"ETERNIX_LEGACY_TICKET_ID_V1";
 pub const EPOCH_SEED_DOMAIN: &[u8] = b"ETERNIX_EPOCH_SEED_V1";
 
 const TX_ENCODING_VERSION: u8 = 1;
-const PROTOCOL_DATA_ENCODING_VERSION: u8 = 1;
 const BLOCK_WIRE_VERSION: u8 = 1;
-const BLOCK_HEADER_LEN: usize = 229;
-
-pub static EMPTY_TX_ROOT: LazyLock<Hash> = LazyLock::new(|| {
-    let mut preimage = Vec::from(TX_LIST_DOMAIN);
-    preimage.extend_from_slice(&0_u64.to_be_bytes());
-    keccak256(&preimage)
-});
-
-pub static EMPTY_RECEIPTS_ROOT: LazyLock<Hash> = LazyLock::new(|| {
-    let mut preimage = Vec::from(RECEIPT_LIST_DOMAIN);
-    preimage.extend_from_slice(&0_u64.to_be_bytes());
-    keccak256(&preimage)
-});
-
-pub static EMPTY_PROTOCOL_DATA_ROOT: LazyLock<Hash> = LazyLock::new(|| {
-    let empty = ProtocolData::empty();
-    hash_with_domain(PROTOCOL_DATA_DOMAIN, &empty.canonical_bytes())
-});
 
 pub static GENESIS_HASH: LazyLock<Hash> = LazyLock::new(|| {
     let mut preimage = Vec::from(GENESIS_DOMAIN);
@@ -53,19 +37,6 @@ pub static GENESIS_HASH: LazyLock<Hash> = LazyLock::new(|| {
     preimage.extend_from_slice(&CHAIN_ID.to_be_bytes());
     keccak256(&preimage)
 });
-
-pub fn keccak256(bytes: &[u8]) -> Hash {
-    let mut hasher = Keccak256::new();
-    hasher.update(bytes);
-    hasher.finalize().into()
-}
-
-pub fn hash_with_domain(domain: &[u8], canonical_bytes: &[u8]) -> Hash {
-    let mut hasher = Keccak256::new();
-    hasher.update(domain);
-    hasher.update(canonical_bytes);
-    hasher.finalize().into()
-}
 
 pub fn format_hash(hash: &Hash) -> String {
     format!("0x{}", hex::encode(hash))
@@ -82,39 +53,6 @@ pub fn parse_hash(value: &str) -> Option<Hash> {
 pub fn short_hash(hash: &Hash) -> String {
     let encoded = hex::encode(hash);
     format!("0x{}...{}", &encoded[..8], &encoded[60..])
-}
-
-pub fn proposer_id(validator_id: &str) -> Hash {
-    let bytes = validator_id.as_bytes();
-    let mut canonical = Vec::with_capacity(8 + bytes.len());
-    canonical.extend_from_slice(
-        &u64::try_from(bytes.len())
-            .expect("validator IDs fit the canonical u64 length")
-            .to_be_bytes(),
-    );
-    canonical.extend_from_slice(bytes);
-    hash_with_domain(PROPOSER_ID_DOMAIN, &canonical)
-}
-
-impl BlockKind {
-    pub const fn consensus_code(self) -> u8 {
-        match self {
-            Self::Validator => 0,
-            Self::ProtocolMiss => 1,
-            Self::ProtocolNoTickets => 2,
-            Self::ProtocolCollision => 3,
-        }
-    }
-
-    pub const fn from_consensus_code(code: u8) -> Option<Self> {
-        match code {
-            0 => Some(Self::Validator),
-            1 => Some(Self::ProtocolMiss),
-            2 => Some(Self::ProtocolNoTickets),
-            3 => Some(Self::ProtocolCollision),
-            _ => None,
-        }
-    }
 }
 
 impl TxKind {
@@ -264,115 +202,11 @@ impl Tx {
 }
 
 pub fn transaction_root(transactions: &[Tx]) -> Option<Hash> {
-    if transactions.is_empty() {
-        return Some(*EMPTY_TX_ROOT);
-    }
-    let mut preimage = Vec::with_capacity(TX_LIST_DOMAIN.len() + 8 + transactions.len() * 32);
-    preimage.extend_from_slice(TX_LIST_DOMAIN);
-    preimage.extend_from_slice(&u64::try_from(transactions.len()).ok()?.to_be_bytes());
-    for transaction in transactions {
-        preimage.extend_from_slice(&transaction.hash()?);
-    }
-    Some(keccak256(&preimage))
-}
-
-impl ProtocolData {
-    pub fn empty() -> Self {
-        Self {
-            missed_proposer: None,
-            fees_burned: 0,
-        }
-    }
-
-    // V1 commits fee burns plus the missed validator ID when a miss block applies one.
-    pub fn canonical_bytes(&self) -> Vec<u8> {
-        let mut out = Vec::new();
-        out.push(PROTOCOL_DATA_ENCODING_VERSION);
-        out.extend_from_slice(&self.fees_burned.to_be_bytes());
-        match &self.missed_proposer {
-            Some(proposer) => {
-                out.push(1);
-                append_bytes(&mut out, proposer.as_bytes())
-                    .expect("validator IDs fit the canonical u32 length");
-            }
-            None => out.push(0),
-        }
-        out
-    }
-
-    pub fn from_canonical_bytes(bytes: &[u8]) -> Option<Self> {
-        let mut decoder = Decoder::new(bytes);
-        if decoder.u8()? != PROTOCOL_DATA_ENCODING_VERSION {
-            return None;
-        }
-        let fees_burned = decoder.u64()?;
-        let missed_proposer = match decoder.u8()? {
-            0 => None,
-            1 => Some(decoder.string()?),
-            _ => return None,
-        };
-        if !decoder.finished() {
-            return None;
-        }
-        Some(Self {
-            missed_proposer,
-            fees_burned,
-        })
-    }
-
-    pub fn root(&self) -> Hash {
-        if self == &Self::empty() {
-            return *EMPTY_PROTOCOL_DATA_ROOT;
-        }
-        hash_with_domain(PROTOCOL_DATA_DOMAIN, &self.canonical_bytes())
-    }
-}
-
-impl BlockHeader {
-    // Consensus V1 field order is fixed exactly as written here. All integers are big-endian.
-    pub fn canonical_bytes(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(BLOCK_HEADER_LEN);
-        out.extend_from_slice(&self.protocol_version.to_be_bytes());
-        out.extend_from_slice(&self.chain_id.to_be_bytes());
-        out.extend_from_slice(&self.slot.to_be_bytes());
-        out.push(self.block_kind.consensus_code());
-        out.extend_from_slice(&self.parent_hash);
-        out.extend_from_slice(&self.proposer_id);
-        out.extend_from_slice(&self.ticket_id.to_be_bytes());
-        out.extend_from_slice(&self.transaction_root);
-        out.extend_from_slice(&self.state_root);
-        out.extend_from_slice(&self.receipts_root);
-        out.extend_from_slice(&self.gas_used.to_be_bytes());
-        out.extend_from_slice(&self.protocol_data_root);
-        debug_assert_eq!(out.len(), BLOCK_HEADER_LEN);
-        out
-    }
-
-    pub fn from_canonical_bytes(bytes: &[u8]) -> Option<Self> {
-        if bytes.len() != BLOCK_HEADER_LEN {
-            return None;
-        }
-        let mut decoder = Decoder::new(bytes);
-        let header = Self {
-            protocol_version: decoder.u32()?,
-            chain_id: decoder.u64()?,
-            slot: decoder.u64()?,
-            block_kind: BlockKind::from_consensus_code(decoder.u8()?)?,
-            parent_hash: decoder.hash()?,
-            proposer_id: decoder.hash()?,
-            ticket_id: decoder.u64()?,
-            transaction_root: decoder.hash()?,
-            state_root: decoder.hash()?,
-            receipts_root: decoder.hash()?,
-            gas_used: decoder.u64()?,
-            protocol_data_root: decoder.hash()?,
-        };
-        decoder.finished().then_some(header)
-    }
-
-    pub fn hash(&self) -> Hash {
-        hash_with_domain(BLOCK_HEADER_DOMAIN, &self.canonical_bytes())
-    }
+    let ids = transactions
+        .iter()
+        .map(Tx::hash)
+        .collect::<Option<Vec<_>>>()?;
+    ordered_transaction_root(&ids)
 }
 
 impl Block {
@@ -1012,6 +846,22 @@ mod tests {
         assert_eq!(Block::from_wire_bytes(&bytes), Some(block));
         bytes[1] ^= 1;
         assert!(Block::from_wire_bytes(&bytes).is_none());
+    }
+
+    #[test]
+    fn historical_wire_never_accepts_experimental_native_profile() {
+        // Extraction shares commitments only, never native admission. Even changing the frame tag
+        // cannot reinterpret a profile-2 header/199-byte body as the historical V1 transaction type.
+        let fixture: Value =
+            serde_json::from_str(include_str!("../tests/fixtures/stage4_native_blocks.json"))
+                .unwrap();
+        for name in ["anchor", "single", "empty", "sequential"] {
+            let mut bytes =
+                hex::decode(fixture["vectors"][name]["wire"].as_str().unwrap()).unwrap();
+            assert!(Block::from_wire_bytes(&bytes).is_none());
+            bytes[0] = 1;
+            assert!(Block::from_wire_bytes(&bytes).is_none());
+        }
     }
 
     #[test]

@@ -15,3 +15,8 @@ serde_json = "1.0"
 k256 = "0.13"
 sha3 = "0.10"
 rlp = "0.5"
+# Pin the fixture store and its bundled SQLite engine; no host SQLite defaults are used.
+rusqlite = { version = "=0.38.0", features = ["bundled"] }
+
+[dev-dependencies]
+tempfile = "=3.23.0"
