@@ -219,7 +219,8 @@ impl FixtureAdmissionGrant {
             slot,
         }
     }
-    fn matches(
+    /// Shared exact grant comparison for signed schema-3 sealing; no new source of admission authority.
+    pub(crate) fn matches(
         &self,
         context: AuthenticationContext,
         anchor: Hash,
@@ -772,6 +773,24 @@ impl CanonicalFixtureStore {
     /// Profiling adds fixed phase-boundary clocks only, not clocks or alternate SQL inside loops.
     pub fn commit_profiled(&mut self, staged: StagedNativeBlock) -> AppendOutcome {
         self.commit_inner(staged, true)
+    }
+    /// Test-only existing-schema baseline for matched unpublished-recovery measurements.
+    /// Production API/behavior is unchanged; the failure is after the actual durable SQL COMMIT.
+    #[cfg(test)]
+    pub(crate) fn commit_unpublished_for_measurement(
+        &mut self,
+        staged: StagedNativeBlock,
+    ) -> AppendOutcome {
+        self.hook = Some(Box::new(|p| {
+            if p == "after_commit" {
+                Err(invalid("controlled unpublished baseline"))
+            } else {
+                Ok(())
+            }
+        }));
+        let result = self.commit(staged);
+        self.hook = None;
+        result
     }
     fn commit_inner(&mut self, staged: StagedNativeBlock, profiling: bool) -> AppendOutcome {
         if let Err(e) = self.ready() {

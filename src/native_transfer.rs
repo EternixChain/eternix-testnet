@@ -13,11 +13,20 @@ use std::fmt;
 pub(crate) mod phase_evidence {
     use std::cell::Cell;
     thread_local! { static COUNTS: Cell<(usize, usize)> = const { Cell::new((0, 0)) }; }
+    thread_local! { static STAGES: Cell<usize> = const { Cell::new(0) }; }
     pub(crate) fn reset() {
         COUNTS.set((0, 0));
+        STAGES.set(0);
     }
     pub(crate) fn counts() -> (usize, usize) {
         COUNTS.get()
+    }
+    /// Count function invocations too: per-entry counters cannot prove once-only empty staging.
+    pub(crate) fn stages() -> usize {
+        STAGES.get()
+    }
+    pub(super) fn stage() {
+        STAGES.set(STAGES.get() + 1);
     }
     pub(super) fn authentication() {
         let (a, e) = COUNTS.get();
@@ -325,6 +334,8 @@ pub fn stage_body(
     slot: u64,
     body: &[Vec<u8>],
 ) -> Result<StagedBody, BodyError> {
+    #[cfg(test)]
+    phase_evidence::stage();
     let proofs: Vec<AuthenticatedTransaction> = body
         .iter()
         .enumerate()

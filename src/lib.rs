@@ -3,6 +3,7 @@
 //! Exporting native authentication and offline application does not activate V2 in RPC, P2P,
 //! or the live node's canonical execution.
 
+pub mod authenticated_fixture;
 pub mod block_authentication;
 pub mod block_commitment;
 pub mod canonical_fixture;
