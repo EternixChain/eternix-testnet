@@ -317,6 +317,7 @@ The shared offline native V2 ETX transfer applicator, atomic commit boundary, an
 The fixture-only SQLite coordinator, initialization/recovery contract, failure evidence, and release benchmarks are documented in [`docs/durable-fixture-storage.md`](docs/durable-fixture-storage.md).
 The experimental offline anchored native-block adapter, exact codec, atomic tip/state storage, recovery evidence, and retained-history benchmarks are documented in [`docs/stage-4-canonical-storage.md`](docs/stage-4-canonical-storage.md).
 The fresh offline schema-3 archive, compact durable producer evidence, signed-only staging, authenticated recovery, and matched storage measurements are documented in [`docs/authenticated-block-storage.md`](docs/authenticated-block-storage.md).
+The bounded S1 local fixture worker, independent public profile/selection inputs, lifetime lock, and separate-process verification are documented in [`docs/testnet-fixture-worker.md`](docs/testnet-fixture-worker.md).
 
 Protocol specifications and docs will be published at:
 
