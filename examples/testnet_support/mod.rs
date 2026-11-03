@@ -1,5 +1,6 @@
-//! S1 example-only process boundary. The archive remains the sole mutable canonical owner.
+//! S1/S2 example-only process boundary. The archive remains the sole mutable canonical owner.
 mod framing;
+pub mod producer;
 pub mod profile;
 #[cfg(test)]
 mod tests;
@@ -39,6 +40,21 @@ enum Command {
         selection: u16,
         envelope: String,
     },
+    ExtendApprovals {
+        path: String,
+    },
+    SubmitNative {
+        transaction: String,
+    },
+    Pool {
+        offset: u16,
+        limit: u16,
+    },
+    Prepare {},
+    Propose {},
+    CommitPrepared {
+        selection: u16,
+    },
     Recover {},
     Stop {},
 }
@@ -69,14 +85,38 @@ fn failure(kind: &str, detail: impl AsRef<str>) -> Value {
     json!({"ok":false,"error":{"kind":kind,"detail":&text[..end]}})
 }
 
-struct Worker {
+pub(crate) struct Worker {
     store: AuthenticatedFixtureStore,
     profile: Profile,
     approvals: Approvals,
     // A successful SQL recovery is still unavailable here until the independent selection pins match.
     pins_valid: bool,
+    producer: Option<producer::Producer>,
 }
 impl Worker {
+    /// The same constructor is used by the executable and actual-call counter tests inside the
+    /// library test build; no caller can install arbitrary state/effects through this example.
+    pub(crate) fn new(
+        store: AuthenticatedFixtureStore,
+        profile: Profile,
+        approvals: Approvals,
+        producer: Option<producer::Producer>,
+    ) -> Result<Self, String> {
+        approvals.check_prefix(store.snapshot().map_err(|e| e.to_string())?)?;
+        Ok(Self {
+            store,
+            profile,
+            approvals,
+            pins_valid: true,
+            producer,
+        })
+    }
+
+    #[cfg(test)]
+    #[allow(dead_code)] // Used by the library's same-source orchestration counter tests.
+    pub(crate) fn test_command(&mut self, value: Value) -> Value {
+        self.handle(serde_json::from_value(value).expect("test command schema"))
+    }
     fn available(&self) -> bool {
         self.pins_valid && self.store.is_ready()
     }
@@ -131,6 +171,12 @@ impl Worker {
     fn apply(&mut self, selection: u16, encoded: &str) -> Value {
         if !self.available() {
             return failure("unavailable", "explicit recovery required");
+        }
+        if self.producer.as_ref().is_some_and(|p| p.pending.is_some()) {
+            return failure(
+                "producer",
+                "owned preparation exists; seal it or explicitly recover before replay",
+            );
         }
         let Some(selected) = selection
             .checked_sub(1)
@@ -200,8 +246,81 @@ impl Worker {
                 tip: t,
                 envelope_id,
                 ..
-            } => success(json!({"outcome":"committed","new_commit":true,
-                "tip":tip(t),"envelope_id":hex::encode(envelope_id)})),
+            } => {
+                self.reconcile_pool();
+                success(json!({"outcome":"committed","new_commit":true,
+                    "tip":tip(t),"envelope_id":hex::encode(envelope_id)}))
+            }
+            AppendOutcome::Aborted(e) => failure("aborted", e.to_string()),
+            AppendOutcome::RecoveryRequired(e) => failure("recovery_required", e.to_string()),
+        }
+    }
+    fn reconcile_pool(&mut self) -> usize {
+        if let Some(p) = &mut self.producer {
+            // Committed/successful recovery guarantees a coherent Ready snapshot. No new crypto,
+            // native application or persisted write is introduced by local pool reconciliation.
+            p.reconcile(self.store.snapshot().expect("confirmed coherent owner"))
+        } else {
+            0
+        }
+    }
+    fn commit_prepared(&mut self, selection: u16) -> Value {
+        if !self.available() {
+            return failure("unavailable", "explicit recovery required");
+        }
+        let Some(selected) = selection
+            .checked_sub(1)
+            .and_then(|i| self.approvals.0.get(i as usize))
+            .copied()
+        else {
+            return failure("selection", "independent selection is not loaded");
+        };
+        let Some(p) = self.producer.as_mut() else {
+            return failure("producer", "producer role required");
+        };
+        let Some(pending) = p.pending.as_ref() else {
+            return failure(
+                "producer",
+                "no live owned preparation; replay original selected E explicitly",
+            );
+        };
+        let Some(bytes) = pending.envelope.as_ref() else {
+            return failure("producer", "propose explicitly before commitment");
+        };
+        let envelope =
+            SignedBlockEnvelope::from_wire_bytes(bytes).expect("locally signed bounded envelope");
+        // Reject wrong authority BEFORE consuming the non-cloneable native preparation. A corrected
+        // operator request can still seal that exact preparation without restaging or re-signing.
+        if selected.base != pending.base
+            || self.store.snapshot().expect("ready").tip != pending.base
+            || selected.tip.hash != envelope.block().hash()
+            || selected.envelope_id != envelope.envelope_id()
+        {
+            return failure(
+                "selection",
+                "approval does not bind the original preparation/proposal",
+            );
+        }
+        let pending = p.pending.take().expect("checked preparation");
+        let bytes = pending.envelope.expect("checked original proposal");
+        let stage =
+            match self
+                .store
+                .seal_prepared(pending.prepared, &bytes, selected.grant(&self.profile))
+            {
+                Ok(s) => s,
+                Err(e) => return failure("rejected", e.to_string()),
+            };
+        match self.store.commit(stage) {
+            AppendOutcome::Committed {
+                tip: t,
+                envelope_id,
+                ..
+            } => {
+                let removed = self.reconcile_pool();
+                success(json!({"outcome":"committed","new_commit":true,"tip":tip(t),
+                    "envelope_id":hex::encode(envelope_id),"envelope":hex::encode(bytes),"pool_removed":removed}))
+            }
             AppendOutcome::Aborted(e) => failure("aborted", e.to_string()),
             AppendOutcome::RecoveryRequired(e) => failure("recovery_required", e.to_string()),
         }
@@ -213,8 +332,14 @@ impl Worker {
                 selection,
                 envelope,
             } => self.apply(selection, &envelope),
+            Command::CommitPrepared { selection } => self.commit_prepared(selection),
             Command::Recover {} => {
                 self.pins_valid = false;
+                // Every refresh invalidates generation, even an unsuccessful one. Never preserve
+                // an old prepared body or automatically sign another request after recovery.
+                if let Some(p) = &mut self.producer {
+                    p.pending = None;
+                }
                 let result = self
                     .store
                     .recover()
@@ -227,6 +352,7 @@ impl Worker {
                 match result {
                     Ok(r) => {
                         self.pins_valid = true;
+                        self.reconcile_pool();
                         success(json!({"outcome":"recovered","tip":tip(r.tip),
                         "attempted_present":r.attempted_present,"new_commit":false}))
                     }
@@ -259,6 +385,55 @@ impl Worker {
                         .export_signed_envelope(revision)
                         .map(|bytes| json!({"revision":revision,"envelope":hex::encode(bytes)}))
                         .map_err(|e| e.to_string()),
+                    Command::ExtendApprovals { path } => (|| {
+                        if path.len() > 4096 {
+                            return Err("approval path length bound".into());
+                        }
+                        let next = self.approvals.extension(
+                            Path::new(&path),
+                            &self.profile,
+                            self.snapshot()?,
+                        )?;
+                        self.approvals = next;
+                        Ok(
+                            json!({"outcome":"approvals_extended","selected_steps":self.approvals.0.len(),"new_commit":false}),
+                        )
+                    })(),
+                    Command::SubmitNative { transaction } => match &mut self.producer {
+                        Some(p) => p.submit(
+                            &transaction,
+                            &self.profile,
+                            self.store.snapshot().expect("ready"),
+                        ),
+                        None => Err("producer role required".into()),
+                    },
+                    Command::Pool { offset, limit } => match &self.producer {
+                        Some(p) => p.view(offset, limit),
+                        None => Err("producer role required".into()),
+                    },
+                    Command::Prepare {} => match &mut self.producer {
+                        Some(p) => p.prepare(&self.store, self.approvals.head(&self.profile)),
+                        None => Err("producer role required".into()),
+                    },
+                    Command::Propose {} => match &mut self.producer {
+                        Some(p) => {
+                            // A loaded selection may be ahead even while an older preparation is
+                            // still alive. Only an ALREADY cached original proposal may be inspected;
+                            // never newly sign after authority has selected an unresolved request.
+                            if self.approvals.head(&self.profile)
+                                != self.store.snapshot().expect("ready").tip
+                                && p.pending
+                                    .as_ref()
+                                    .is_some_and(|pending| pending.envelope.is_none())
+                            {
+                                Err("selected request unresolved; do not sign another proposal"
+                                    .into())
+                            } else {
+                                p.propose(&self.store, &self.profile)
+                            }
+                        }
+                        None => Err("producer role required".into()),
+                    },
                     _ => unreachable!(),
                 };
                 match result {
@@ -304,16 +479,29 @@ fn serve(
     args: Vec<OsString>,
     input: &mut impl Read,
     output: &mut impl Write,
+    producer_role: bool,
 ) -> Result<(), String> {
-    if args.len() != 4 || !matches!(args[0].to_str(), Some("init" | "open")) {
-        return Err(
+    if args.len() != if producer_role { 5 } else { 4 }
+        || !matches!(args[0].to_str(), Some("init" | "open"))
+    {
+        return Err(if producer_role {
+            "usage: testnet_fixture_producer init|open PROFILE_JSON APPROVALS_JSON EXISTING_DATA_DIR PRIVATE_KEY_FILE"
+        } else {
             "usage: testnet_fixture_node init|open PROFILE_JSON APPROVALS_JSON EXISTING_DATA_DIR"
-                .into(),
-        );
+        }.into());
     }
     let initialize = args[0] == "init";
     let profile = Profile::load(Path::new(&args[1]))?;
     let approvals = Approvals::load(Path::new(&args[2]), &profile)?;
+    let producer = if producer_role {
+        Some(producer::load_signer(
+            Path::new(&args[4]),
+            Path::new(&args[3]),
+            &profile,
+        )?)
+    } else {
+        None
+    };
     // Declared before Worker so its guard drops AFTER the store/SQLite connection on every exit.
     // Never unlink/replace this persistent lock inode; OS exit/SIGKILL releases its advisory lock.
     let (_guard, path) = lock_directory(Path::new(&args[3]), initialize)?;
@@ -323,13 +511,7 @@ fn serve(
         AuthenticatedFixtureStore::reopen(&path, &profile.manifest)
     }
     .map_err(|e| e.to_string())?;
-    approvals.check_prefix(store.snapshot().map_err(|e| e.to_string())?)?;
-    let mut worker = Worker {
-        store,
-        profile,
-        approvals,
-        pins_valid: true,
-    };
+    let mut worker = Worker::new(store, profile, approvals, producer)?;
     framing::write_frame(output, &success(worker.status()?))?;
     while let Some(bytes) = framing::read_frame(input)? {
         let command: Command = match serde_json::from_slice(&bytes) {
@@ -350,10 +532,21 @@ fn serve(
 }
 
 /// Run exactly one serialized owner over trusted local stdin/stdout. No background queues or sockets.
+#[allow(dead_code)] // Entry point of the S1 executable; both examples share this runtime module.
 pub fn run(args: Vec<OsString>) -> Result<(), String> {
+    run_role(args, false)
+}
+
+/// Separate S2 executable opt-in; the S1 entrypoint never loads signing material or enables a pool.
+#[allow(dead_code)] // Entry point of the S2 executable; unused in the S1 executable by construction.
+pub fn run_producer(args: Vec<OsString>) -> Result<(), String> {
+    run_role(args, true)
+}
+
+fn run_role(args: Vec<OsString>, producer_role: bool) -> Result<(), String> {
     let mut input = std::io::stdin().lock();
     let mut output = std::io::stdout().lock();
-    let result = serve(args, &mut input, &mut output);
+    let result = serve(args, &mut input, &mut output, producer_role);
     if let Err(error) = &result {
         // One bounded terminal diagnostic; a broken/blocked consumer cannot trigger recursive output.
         let _ = framing::write_frame(&mut output, &failure("terminal", error));

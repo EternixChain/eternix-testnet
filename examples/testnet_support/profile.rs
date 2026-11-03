@@ -251,7 +251,7 @@ impl Profile {
 }
 
 /// Independent operator-selected base and exact content/evidence identity, not packet authority.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Eq, PartialEq)]
 pub struct Selection {
     pub base: Tip,
     pub tip: Tip,
@@ -286,9 +286,29 @@ struct TipDocument {
     revision: u64,
 }
 
-/// Immutable finite selected sequence supplied independently through a startup file, never Apply.
+/// Finite selected sequence supplied independently at startup or explicit monotonic extension,
+/// never inferred from Apply or replaced by packet claims.
 pub struct Approvals(pub Vec<Selection>);
 impl Approvals {
+    /// Current selected head, which may be ahead of committed progress and is not a commit receipt.
+    pub fn head(&self, p: &Profile) -> Tip {
+        self.0
+            .last()
+            .map(|s| s.tip)
+            .unwrap_or_else(|| p.anchor_tip())
+    }
+
+    /// Explicit operator-only monotonic authority extension. Existing loaded pins cannot be changed,
+    /// removed, reordered or silently reloaded; the archive generation/preparation is left intact.
+    pub fn extension(&self, path: &Path, p: &Profile, snapshot: &Snapshot) -> Result<Self, String> {
+        let next = Self::load(path, p)?;
+        if !next.0.starts_with(&self.0) {
+            return Err("approval extension must preserve every loaded historical pin".into());
+        }
+        next.check_prefix(snapshot)?;
+        Ok(next)
+    }
+
     /// Bind every selected request to independent context/anchor/base before receiving any envelope.
     pub fn load(path: &Path, p: &Profile) -> Result<Self, String> {
         let d: ApprovalDocument = serde_json::from_slice(&read_bounded(path, MAX_APPROVAL_BYTES)?)

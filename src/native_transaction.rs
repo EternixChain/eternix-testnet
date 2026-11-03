@@ -422,6 +422,8 @@ pub fn authenticate(
     context: &AuthenticationContext,
     claimed_id: Option<&Hash>,
 ) -> Result<AuthenticatedTransaction, Error> {
+    #[cfg(test)]
+    phase_evidence::authentication();
     let transaction = SignedTransaction::from_canonical_bytes(bytes)?;
     transaction.unsigned.validate_profile(context)?;
     let transaction_id = transaction.transaction_id()?;
@@ -440,6 +442,23 @@ pub fn authenticate(
         signing_digest,
         public_key,
     })
+}
+
+/// Test-only actual entry-call evidence, separating pool admission from inclusion/audit calls.
+/// No result cache, branch decision or protocol input depends on these thread-local observations.
+#[cfg(test)]
+pub(crate) mod phase_evidence {
+    use std::cell::Cell;
+    thread_local! {static CALLS: Cell<usize> = const {Cell::new(0)};}
+    pub(crate) fn reset() {
+        CALLS.set(0);
+    }
+    pub(crate) fn count() -> usize {
+        CALLS.get()
+    }
+    pub(super) fn authentication() {
+        CALLS.set(CALLS.get() + 1);
+    }
 }
 
 /// Signs only this native payload/domain using k256, after context and sender-key checks.

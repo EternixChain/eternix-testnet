@@ -71,7 +71,7 @@ fn bounded_framing_exact_eof_and_response_limit() {
 fn empty_commands_reject_unexpected_fields_and_duplicate_tags() {
     // Serde unit variants ignore fields even with enum-level deny_unknown_fields. Empty STRUCT
     // variants preserve the strict operator schema for status/recover/stop too.
-    for command in ["status", "recover", "stop"] {
+    for command in ["status", "recover", "stop", "prepare", "propose"] {
         assert!(serde_json::from_value::<Command>(json!({"command":command})).is_ok());
         assert!(
             serde_json::from_value::<Command>(json!({"command":command,"extra":true})).is_err()

@@ -645,6 +645,7 @@ fn full_width_anchor_state_and_empty_successor_commit_and_reopen() {
 
 mod measurements;
 mod storage_evidence;
+mod worker_s2;
 
 #[test]
 fn independently_changed_context_anchor_seed_and_binding_declarations_never_self_authorize() {

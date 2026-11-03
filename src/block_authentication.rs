@@ -397,6 +397,8 @@ pub fn sign_block(
     context: &BlockAuthenticationContext,
     binding: &ProducerBinding,
 ) -> Result<SignedBlockEnvelope, Error> {
+    #[cfg(test)]
+    phase_evidence::signing();
     let mut envelope = SignedBlockEnvelope::from_parts(
         block.clone(),
         context.native.network_id(),
@@ -467,11 +469,20 @@ fn field<const N: usize>(bytes: &[u8], offset: usize) -> Result<[u8; N], Error> 
 pub(crate) mod phase_evidence {
     use std::cell::Cell;
     thread_local! { static RECOVERIES: Cell<usize> = const { Cell::new(0) }; }
+    thread_local! { static SIGNINGS: Cell<usize> = const { Cell::new(0) }; }
+    /// Actual signer entry calls distinguish a cached proposal from deterministic re-signing.
+    pub(crate) fn signing() {
+        SIGNINGS.set(SIGNINGS.get() + 1);
+    }
+    pub(crate) fn signing_count() -> usize {
+        SIGNINGS.get()
+    }
     pub(crate) fn recovery() {
         RECOVERIES.set(RECOVERIES.get() + 1);
     }
     pub(crate) fn reset() {
         RECOVERIES.set(0);
+        SIGNINGS.set(0);
     }
     pub(crate) fn count() -> usize {
         RECOVERIES.get()

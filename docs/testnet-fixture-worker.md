@@ -5,6 +5,11 @@ It is a long-lived process with **one serialized `AuthenticatedFixtureStore` own
 initialization/selection inputs and local operator commands. It contains no producer signing,
 mempool, peer sockets, scheduler, PoAsh eligibility or prototype-node integration.
 
+S2 subsequently added a separate opt-in producer executable and an explicit monotonic approval
+extension command to the shared runtime. The default S1 executable still has no enabled signer or
+pool. See [`testnet-fixture-producer.md`](testnet-fixture-producer.md) for those additions and current
+producer/controller verification; S1 results below retain their original scope.
+
 Supporting code is confined to `examples/testnet_support/{profile,framing,mod,tests}.rs`. Existing
 archive schemas, cryptographic domains/bytes, native rules, durability/audits/recovery and legacy
 HIST/BLOCK rejection are reused unchanged. There was no archive API gap requiring a contract change.
@@ -150,8 +155,11 @@ An empty approval list is valid for initialization/inspection; a usable matching
 [`../tests/fixtures/testnet_fixture_approvals_empty.json`](../tests/fixtures/testnet_fixture_approvals_empty.json).
 Opening a nonempty archive with omitted/different historical pins fails rather than downgrading to
 fresh unpinned attribution. Valid shorter local prefixes are reported as `catching_up`; no catch-up
-service is implemented in S1. Changing/expanding approvals requires explicit stop/open with a matching
-retained prefix; there is no hot-reload command.
+service is implemented in S1. Explicit stop/open with a matching retained prefix remains supported.
+S2 additionally permits the trusted operator to call `extend_approvals` with a public file path;
+the complete already-loaded prefix must remain identical. There is no automatic file reload or
+authority replacement. Exact commands and selection-before-commit ordering are documented in the
+producer document.
 
 For a new append, the worker compares the independent selection's profile/anchor/base/H/slot with
 the submitted envelope, checks P/ticket/body budget and exact E-ID, constructs the fixture grant
