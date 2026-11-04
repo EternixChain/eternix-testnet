@@ -20,6 +20,10 @@ pool. No peer sockets, autonomous slots, eligibility, protocol blocks, schema ch
 changes or prototype-node activation are introduced. Controller authority is the approved experiment,
 not PoAsh consensus, a quorum or finality.
 
+S3 subsequently adds a separate opt-in [fixture peer executable](testnet-fixture-transport.md).
+The original S1/S2 executables and controller CLI remain local/operator-only. S3 reuses their
+authoritative owner, private signer and independent approvals without enabling sockets implicitly.
+
 ## Build and Private Signing Input
 
 ```bash

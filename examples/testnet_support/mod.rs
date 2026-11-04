@@ -4,6 +4,8 @@ pub mod producer;
 pub mod profile;
 #[cfg(test)]
 mod tests;
+#[allow(dead_code)] // Only the explicit S3 executable enables socket/operator multiplexing.
+pub mod transport;
 
 use eternix_testnet::authenticated_fixture::{
     AppendOutcome, AuthenticatedFixtureStore, Error, Snapshot,

@@ -312,6 +312,7 @@ dependencies = [
  "crossterm",
  "hex",
  "k256",
+ "libc",
  "rand",
  "ratatui",
  "rlp",

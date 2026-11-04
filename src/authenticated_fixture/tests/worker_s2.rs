@@ -203,6 +203,64 @@ fn selected_original_cannot_trigger_new_signing_of_an_unsigned_preparation() {
 }
 
 #[test]
+fn actual_peer_dispatch_authenticates_duplicates_without_native_restage_or_relay_permission() {
+    let d = TempDir::new().unwrap();
+    let p = profile();
+    let reference = AuthenticatedFixtureStore::create_authenticated_fixture(
+        d.path().join("reference.db"),
+        &p.manifest,
+    )
+    .unwrap();
+    let body: Vec<_> = inputs(2)
+        .iter()
+        .map(|v| hex::decode(v["transaction"].as_str().unwrap()).unwrap())
+        .collect();
+    let prepared = reference.prepare_next("P", 1, &body).unwrap();
+    let envelope = auth::sign_block(
+        prepared.block(),
+        &key(2),
+        &p.manifest.context(),
+        p.manifest.binding("P").unwrap(),
+    )
+    .unwrap();
+    let original = envelope.wire_bytes();
+    let proposal = json!({"base":{"hash":hex::encode(p.anchor_tip().hash),"slot":0,"revision":0},
+        "block_hash":hex::encode(envelope.block().hash()),"envelope_id":hex::encode(envelope.envelope_id())});
+    let store = AuthenticatedFixtureStore::create_authenticated_fixture(
+        d.path().join("receiver.db"),
+        &p.manifest,
+    )
+    .unwrap();
+    let approvals = Approvals::load(
+        Path::new("tests/fixtures/testnet_fixture_approvals_empty.json"),
+        &p,
+    )
+    .unwrap();
+    let mut w = worker::Worker::new(store, p, approvals, None).unwrap();
+    approve(&mut w, &d, &proposal);
+    reset_all();
+    let committed = worker::transport::receive(&mut w, 1, &original);
+    assert_eq!(committed.new_commit, Some(1));
+    assert!(!committed.duplicate);
+    assert_eq!(evidence(), (2, 1, 1, (2, 2)));
+    let duplicate = worker::transport::receive(&mut w, 1, &original);
+    assert_eq!(duplicate.new_commit, None);
+    assert!(duplicate.duplicate);
+    assert_eq!(
+        evidence(),
+        (2, 2, 1, (2, 2)),
+        "duplicate is cold producer-authenticated but never reapplied"
+    );
+    let mut bad = original;
+    *bad.last_mut().unwrap() = 27;
+    let rejected = worker::transport::receive(&mut w, 1, &bad);
+    assert_eq!(rejected.new_commit, None);
+    assert!(!rejected.duplicate);
+    assert_eq!(evidence(), (2, 2, 1, (2, 2)));
+    assert_eq!(auth::phase_evidence::signing_count(), 0);
+}
+
+#[test]
 fn uncertain_worker_has_no_cleanup_output_or_new_signing_until_explicit_audited_recovery() {
     use std::sync::{
         Arc,
