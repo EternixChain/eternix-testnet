@@ -501,7 +501,11 @@ impl Network {
             self.metrics.queue_full += 1;
             return Err("peer queue/aggregate byte budget full".into());
         }
-        let bytes = codec::encode(&self.context, kind, body)?;
+        let bytes = if kind.extension() {
+            codec::encode_extension(&self.context, kind, body)?
+        } else {
+            codec::encode(&self.context, kind, body)?
+        };
         let frame = Outbound {
             bytes,
             position: 0,
@@ -671,6 +675,7 @@ impl Network {
             "queue_full":m.queue_full,"failed_deliveries":m.failed_deliveries,"blocked_writes":m.blocked_writes,"rx_bytes":m.rx_bytes,"tx_bytes":m.tx_bytes,"frames":m.frames,
             "limits":{"connections":MAX_CONNECTIONS,"queued_frames_per_connection":MAX_QUEUED_FRAMES,"buffer_bytes":MAX_BUFFER_BYTES,
                 "io_bytes_per_connection_per_tick":IO_BYTES_PER_CONNECTION,"frame_bytes":codec::MAX_FRAME_BYTES,"timeout_ms":TIMEOUT.as_millis(),
+                "extension_frame_bytes":codec::MAX_EXTENSION_FRAME_BYTES,
                 "socket_buffer_bytes_per_direction":MAX_SOCKET_BUFFER_BYTES,"requested_listen_backlog":MAX_CONNECTIONS,"automatic_retries":0}})
     }
 }

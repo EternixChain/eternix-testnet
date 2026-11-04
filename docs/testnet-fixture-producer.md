@@ -23,6 +23,9 @@ not PoAsh consensus, a quorum or finality.
 S3 subsequently adds a separate opt-in [fixture peer executable](testnet-fixture-transport.md).
 The original S1/S2 executables and controller CLI remain local/operator-only. S3 reuses their
 authoritative owner, private signer and independent approvals without enabling sockets implicitly.
+S4's [pinned catch-up](testnet-fixture-catchup.md) adds a keyless controller `history` operation for
+already released follower prefixes. New selections still require the current producer-retention gate
+described here; historical reuse does not require P or its key to authorize the same steps again.
 
 ## Build and Private Signing Input
 

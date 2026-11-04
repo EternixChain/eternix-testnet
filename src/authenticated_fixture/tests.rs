@@ -1,4 +1,5 @@
 //! Independent existing wire goldens plus actual schema-3 ownership/evidence regression tests.
+mod worker_s4;
 use super::*;
 use crate as chain;
 use crate::native_transaction::{AuthenticationContext, network_id_from_genesis_bytes};

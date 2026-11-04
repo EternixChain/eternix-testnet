@@ -2,7 +2,7 @@
 """S2 trusted local controller: immutable original selections precede authorization.
 
 No key bytes are read here, no peer sockets or automatic scheduling/re-signing exist. Each CLI
-invocation performs one explicit init/step/reconcile/replay operation under a lifetime controller
+invocation performs one explicit init/step/reconcile/replay/history operation under a lifetime controller
 directory lock. Local durability assumes honest file/directory fsync and the archive's SQLite model.
 """
 import argparse
@@ -17,10 +17,41 @@ import struct
 import subprocess
 import time
 from reproduce_native_auth_vectors import OpenSSLKeccak
+from reproduce_testnet_fixture_profile import genesis
 
 MAX_FRAME = 65536
 MAX_PACKET = 3644
 MAX_STEPS = 200
+
+
+def validate_profile(d,k):
+    """Validate the public descriptor even when historical reuse opens no native worker.
+
+    Workers still independently validate the full manifest, point/binding and literal anchor. This
+    local check prevents metadata ignored by descriptor packing from silently changing on restart.
+    """
+    fields=set("format run_id chain_id native_encoding native_rules inner_wire header_profile outer_wire "
+               "auth_encoding auth_rules storage_schema network_id anchor_wire provenance accounts seed_gas "
+               "seed_burn producer_id producer_key max_blocks max_transactions".split())
+    integers=dict(chain_id=1162,native_encoding=2,native_rules=1,inner_wire=2,header_profile=2,
+                  outer_wire=3,auth_encoding=1,auth_rules=1,storage_schema=3,seed_gas=0,max_blocks=200,max_transactions=16)
+    if (not isinstance(d,dict) or set(d)!=fields or d["format"]!="eternix-fixture-profile-v1"
+            or not isinstance(d["run_id"],str) or re.fullmatch(r"[A-Za-z0-9_-]{1,64}",d["run_id"]) is None
+            or d["provenance"]!="controller-fixture-S1:"+d["run_id"] or d["producer_id"]!="P" or d["seed_burn"]!="0"
+            or any(type(d[name]) is not int or d[name]!=value for name,value in integers.items())
+            or not isinstance(d["accounts"],list) or len(d["accounts"])!=3):
+        raise ValueError("unsupported strict controller public profile")
+    addresses=[]
+    for i,(seed,role) in enumerate(zip(d["accounts"],("alice","bob","carol"))):
+        if (not isinstance(seed,dict) or set(seed)!={"role","address","balance_quarks","nonce"}
+                or seed["role"]!=role or seed["balance_quarks"]!=str(1000000000 if i==0 else 0)
+                or type(seed["nonce"]) is not int or seed["nonce"]!=0):
+            raise ValueError("controller ordered seed changed")
+        addresses.append(hex_bytes(seed["address"],20))
+    if len(set(addresses))!=3 or hex_bytes(d["producer_key"],33)[0] not in (2,3):
+        raise ValueError("controller seed/binding encoding differs")
+    if k(genesis(d))!=hex_bytes(d["network_id"],32):
+        raise ValueError("controller public profile/test-genesis identity differs")
 
 
 def strict_object(pairs):
@@ -161,16 +192,24 @@ class Node:
 
 
 class Controller:
-    def __init__(self, directory, worker, producer, key_file, profile=None):
+    def __init__(self, directory, worker=None, producer=None, key_file=None, profile=None, *, historical=False):
         self.root = Path(directory).resolve()
-        self.worker, self.producer = Path(worker).resolve(), Path(producer).resolve()
-        self.key = Path(key_file).resolve(strict=True)
+        # Historical reuse has no executable or key dependency. It can only derive a prefix of
+        # already released follower authority; it cannot select or release a new logical step.
+        self.historical = historical
+        if historical:
+            if any(value is not None for value in (worker, producer, key_file, profile)):
+                raise ValueError("history takes only an existing controller directory")
+            self.worker = self.producer = self.key = None
+        else:
+            self.worker, self.producer = Path(worker).resolve(), Path(producer).resolve()
+            self.key = Path(key_file).resolve(strict=True)
         self.k = None
         self.lock = None
         try:
             if profile is not None:
                 self.root.mkdir(mode=0o700)  # explicit fresh creation, existing root fails
-            if self.key.is_relative_to(self.root):
+            if self.key is not None and self.key.is_relative_to(self.root):
                 raise ValueError("private key file must be outside controller artifacts")
             self.lock = os.open(self.root/"controller.lock", os.O_RDWR | (os.O_CREAT if profile is not None else 0), 0o600)
             fcntl.flock(self.lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -184,6 +223,9 @@ class Controller:
             self.profile_path = self.root/"profile.json"
             self.profile = read_json(self.profile_path, 16*1024)
             self.network = hex_bytes(self.profile["network_id"], 32)
+            # Historical mode never starts a worker that could otherwise detect a changed public
+            # profile. Recompute its explicit S1 descriptor here before exporting any terminal pin.
+            validate_profile(self.profile,self.k)
             self.anchor = dict(hash=self.profile["anchor_wire"][2:66], slot=0, revision=0)
             self.records = self.load_records()
             self.producer_count = self.artifact_head("producer-approvals")
@@ -297,6 +339,8 @@ class Controller:
     def write_approvals(self,role,n):
         if role not in ("producer","follower") or type(n) is not int or not 0<=n<=len(self.records):
             raise ValueError("invalid derived approval range/role")
+        if self.historical and (role!="follower" or n>self.follower_count):
+            raise ValueError("historical reuse cannot expand released follower authority")
         if role=="follower":
             for i in range(1,n+1):
                 if read_json(self.path("producer-retained",i),16*1024)!=self.observation(i):
@@ -307,6 +351,8 @@ class Controller:
 
     @contextmanager
     def node(self,role,mode="open"):
+        if self.historical:
+            raise ValueError("historical reuse cannot open a worker or signer")
         if role=="producer":
             # Rebuild only the exact derived authority from the synchronized selected corpus before
             # opening a signer. An unresolved selection must block new preparation after restart.
@@ -327,6 +373,8 @@ class Controller:
         return dict(outcome="initialized",new_commit=False)
 
     def select(self,proposal):
+        if self.historical:
+            raise ValueError("historical reuse cannot create a new selection")
         if len(self.records)==MAX_STEPS:
             raise ValueError("experiment selection budget exhausted")
         base=self.head()
@@ -367,12 +415,33 @@ class Controller:
                     new_commit=False,tip=self.head(i),envelope_id=self.records[i-1]["envelope_id"])
 
     def release_follower(self,p,f=None):
+        if self.historical:
+            raise ValueError("historical reuse cannot release new follower authority")
         n=self.observe_producer(p)  # Never trust a previous observation instead of current Ready data.
         path=self.write_approvals("follower",n)
         if f is not None:
             f.ok("extend_approvals",path=str(path))
         self.follower_count=n
         return n
+
+    def historical_target(self,n=None):
+        """Export an independent terminal pin without observing P or creating new authority.
+
+        Constructor validation resynchronizes the original corpus, existing released artifacts and
+        their matching historical retention observations. This is historical authorization, NOT a
+        claim that P is currently Ready or that a lost commit acknowledgement was received.
+        """
+        n=self.follower_count if n is None else n
+        if type(n) is not int or not 1<=n<=self.follower_count:
+            raise ValueError("catch-up target is outside already released follower history")
+        approvals=self.write_approvals("follower",n)
+        document=dict(format="eternix-fixture-catchup-target-v1",run_id=self.profile["run_id"],
+                      network_id=self.profile["network_id"],anchor_hash=self.anchor["hash"],
+                      target=self.head(n),envelope_id=self.records[n-1]["envelope_id"])
+        target=self.path("catchup-target",n)
+        durable_file(target,document,4096)
+        return dict(outcome="historical_target_exported",new_commit=False,target=str(target),
+                    approvals=str(approvals),tip=self.head(n),envelope_id=document["envelope_id"])
 
     def step(self,transactions):
         if not isinstance(transactions,list) or len(transactions)>128:
@@ -431,25 +500,32 @@ class Controller:
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("operation",choices=("init","step","reconcile","replay"))
-    parser.add_argument("--worker",required=True)
-    parser.add_argument("--producer",required=True)
-    parser.add_argument("--key-file",required=True)
+    parser.add_argument("operation",choices=("init","step","reconcile","replay","history"))
+    parser.add_argument("--worker")
+    parser.add_argument("--producer")
+    parser.add_argument("--key-file")
     parser.add_argument("--directory",required=True)
     parser.add_argument("--profile")
     parser.add_argument("--transactions")
+    parser.add_argument("--target-revision",type=int)
     args=parser.parse_args()
     if (args.operation=="init") != (args.profile is not None) or (args.operation=="step") != (args.transactions is not None):
         parser.error("init requires --profile only; step requires --transactions only")
+    history=args.operation=="history"
+    if (history and any((args.worker,args.producer,args.key_file))
+            or not history and not all((args.worker,args.producer,args.key_file))
+            or not history and args.target_revision is not None):
+        parser.error("history uses only --directory/--target-revision; other operations require --worker/--producer/--key-file")
     try:
-        with Controller(args.directory,args.worker,args.producer,args.key_file,args.profile) as c:
+        with Controller(args.directory,args.worker,args.producer,args.key_file,args.profile,historical=history) as c:
             if args.operation=="init": result=c.initialize_nodes()
             elif args.operation=="step":
                 document=read_json(Path(args.transactions),65536)
                 if not isinstance(document,dict) or set(document)!={"transactions"}: raise ValueError("strict transaction batch schema")
                 result=c.step(document["transactions"])
             elif args.operation=="reconcile": result=c.reconcile()
-            else: result=c.replay()
+            elif args.operation=="replay": result=c.replay()
+            else: result=c.historical_target(args.target_revision)
         print(json.dumps(result,sort_keys=True))
     except (OSError,ValueError,KeyError,TypeError,EOFError,TimeoutError) as error:
         # No raw command, secret file content, key bytes or child argv is logged.

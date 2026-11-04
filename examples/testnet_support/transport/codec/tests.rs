@@ -114,3 +114,113 @@ fn independently_frozen_peer_frames_match_exact_encoder_and_payload_bytes() {
         decode(kind, &encoded[HEADER_BYTES..]).unwrap();
     }
 }
+
+#[test]
+fn independently_frozen_retrieval_frames_are_disjoint_from_version_one() {
+    let f: Value = serde_json::from_str(include_str!(
+        "../../../../tests/fixtures/testnet_fixture_catchup.json"
+    ))
+    .unwrap();
+    let old: Value = serde_json::from_str(include_str!(
+        "../../../../tests/fixtures/testnet_fixture_transport.json"
+    ))
+    .unwrap();
+    let p = profile();
+    let e = hex::decode(old["envelope"].as_str().unwrap()).unwrap();
+    let h: Hash = hex::decode(old["block_hash"].as_str().unwrap())
+        .unwrap()
+        .try_into()
+        .unwrap();
+    let eid: Hash = hex::decode(old["envelope_id"].as_str().unwrap())
+        .unwrap()
+        .try_into()
+        .unwrap();
+    let one = Tip {
+        hash: h,
+        slot: 1,
+        revision: 1,
+    };
+    let id = f["request_id"].as_u64().unwrap();
+    for v in f["frames"].as_array().unwrap() {
+        let kind =
+            Kind::parse_version(EXTENSION_VERSION, v["kind"].as_u64().unwrap() as u8).unwrap();
+        let body = match v["name"].as_str().unwrap() {
+            "anchor_request" => request(Request {
+                request_id: id,
+                base: p.anchor_tip(),
+                base_eid: [0; 32],
+                target: one,
+                target_eid: eid,
+            }),
+            "nonanchor_request" => request(Request {
+                request_id: id,
+                base: one,
+                base_eid: eid,
+                target: Tip {
+                    hash: [0x33; 32],
+                    slot: 2,
+                    revision: 2,
+                },
+                target_eid: [0x44; 32],
+            }),
+            "successor" => successor(id, 1, &e),
+            "error" => retrieval_error(id, Reject::Unauthorized, 2),
+            _ => unreachable!(),
+        };
+        let ctx = Context::new(v["sender"].as_u64().unwrap() as u16, &p);
+        let mut expected = hex::decode(v["header_hex"].as_str().unwrap()).unwrap();
+        expected.extend(hex::decode(v["payload_prefix_hex"].as_str().unwrap()).unwrap());
+        if v["append_s3_envelope"] == true {
+            expected.extend_from_slice(&e);
+        }
+        assert_eq!(encode_extension(&ctx, kind, &body).unwrap(), expected);
+        assert!(encode(&ctx, kind, &body).is_err());
+        let raw: [u8; HEADER_BYTES] = expected[..HEADER_BYTES].try_into().unwrap();
+        assert_eq!(header(&raw, &Context::new(1, &p)).unwrap().version, 2);
+        decode(kind, &body).unwrap();
+        let mut bad = raw;
+        bad[4] = 1;
+        assert!(header(&bad, &Context::new(1, &p)).is_err());
+    }
+    assert!(encode_extension(&Context::new(1, &p), Kind::Status, &status(p.anchor_tip())).is_err());
+    assert_eq!(MAX_EXTENSION_FRAME_BYTES, 3808);
+}
+
+#[test]
+fn retrieval_bounds_ids_and_reserved_bytes_reject_before_owner_work() {
+    let p = profile();
+    let r = Request {
+        request_id: 1,
+        base: p.anchor_tip(),
+        base_eid: [0; 32],
+        target: Tip {
+            hash: [1; 32],
+            slot: 200,
+            revision: 200,
+        },
+        target_eid: [2; 32],
+    };
+    assert!(decode(Kind::GetSuccessor, &request(r)).is_ok());
+    for offset in [48, 56, 120, 128] {
+        let mut bad = request(r);
+        bad[offset] ^= 0xff;
+        assert!(decode(Kind::GetSuccessor, &bad).is_err(), "offset {offset}");
+    }
+    let mut zero = request(r);
+    zero[..8].fill(0);
+    assert!(decode(Kind::GetSuccessor, &zero).is_err());
+    for (id, rev, n) in [
+        (0, 1, 396),
+        (1, 0, 396),
+        (1, 201, 396),
+        (1, 1, MAX_PACKET_BYTES + 1),
+    ] {
+        assert!(decode(Kind::Successor, &successor(id, rev, &vec![0; n])).is_err());
+    }
+    let mut bad = successor(1, 1, &[0; 396]);
+    bad[16..20].copy_from_slice(&u32::MAX.to_be_bytes());
+    assert!(decode(Kind::Successor, &bad).is_err());
+    let mut bad = retrieval_error(1, Reject::Order, 1);
+    bad[10] = 1;
+    assert!(decode(Kind::RetrievalError, &bad).is_err());
+}

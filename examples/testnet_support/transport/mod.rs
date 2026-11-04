@@ -1,5 +1,6 @@
-//! S3 isolated fixture transport. One authoritative worker stays on this thread; two bounded
+//! S3/S4 isolated fixture transport. One authoritative worker stays on this thread; two bounded
 //! operator I/O threads own only bytes/JSON, never the archive. Peer sockets are nonblocking.
+mod catchup;
 pub mod codec;
 mod net;
 use super::{
@@ -23,6 +24,9 @@ use std::time::{Duration, Instant};
 #[derive(Deserialize)]
 #[serde(tag = "command", rename_all = "snake_case", deny_unknown_fields)]
 enum Local {
+    CatchupStart { node_id: u16, target_path: String },
+    CatchupStatus {},
+    CatchupCancel {},
     PeerStatus {},
     PeerObservations { offset: u16, limit: u16 },
     PeerConnect { node_id: u16 },
@@ -199,9 +203,24 @@ struct Runtime {
     fresh: BTreeSet<u64>,
     counters: Counters,
     observations: Vec<Observation>,
+    catchup: catchup::Catchup,
 }
 impl Runtime {
+    fn new(worker: Worker, config: Config) -> Result<Self, String> {
+        let context = codec::Context::new(config.node_id, &worker.profile);
+        let network = Network::bind(config, context)?;
+        Ok(Self {
+            worker,
+            network,
+            fresh: BTreeSet::new(),
+            counters: Counters::default(),
+            observations: Vec::with_capacity(super::profile::MAX_BLOCKS),
+            catchup: catchup::Catchup::default(),
+        })
+    }
     fn suspend(&mut self) {
+        self.catchup
+            .halt("owner suspended; explicitly reconnect/restart catch-up after recovery");
         self.fresh.clear();
         self.network.suspend();
     }
@@ -267,6 +286,16 @@ impl Runtime {
     fn local(&mut self, c: Local) -> Value {
         let result = (|| -> Result<Value, String> {
             match c {
+                Local::CatchupStatus {} => Ok(self.catchup.status()),
+                Local::CatchupCancel {} => {
+                    // Closing the source discards unsent requests and late responses. Cancellation
+                    // cannot roll back any already committed prefix or automatically resume it.
+                    if let Some(peer) = self.catchup.source() {
+                        self.network.disconnect(peer);
+                    }
+                    self.catchup.halt("operator cancelled catch-up");
+                    Ok(self.catchup.status())
+                }
                 Local::PeerStatus {} => {
                     let mut v = self.network.status();
                     let n = &self.counters;
@@ -286,6 +315,7 @@ impl Runtime {
                     v["recovery_dispatch_us"] = json!(n.recovery_dispatch_us);
                     v["recovery_action_us"] = json!(n.recovery_action_us);
                     v["stop_dispatch_us"] = json!(n.stop_dispatch_us);
+                    v["catchup"] = self.catchup.status();
                     Ok(v)
                 }
                 Local::PeerObservations { offset, limit } => {
@@ -297,6 +327,9 @@ impl Runtime {
                     Ok(json!({"total":self.observations.len(),"rows":rows}))
                 }
                 Local::PeerDisconnect { node_id } => {
+                    if self.catchup.source() == Some(node_id) {
+                        self.catchup.halt("operator disconnected catch-up source");
+                    }
                     self.network.disconnect(node_id);
                     Ok(json!({"outcome":"disconnected","new_commit":false}))
                 }
@@ -305,6 +338,15 @@ impl Runtime {
                         return Err("owner unavailable; explicit recovery required".into());
                     }
                     match other {
+                        Local::CatchupStart {
+                            node_id,
+                            target_path,
+                        } => self.catchup.start(
+                            &self.worker,
+                            &self.network,
+                            node_id,
+                            Path::new(&target_path),
+                        ),
                         Local::PeerConnect { node_id } => {
                             let body = codec::status(self.worker.snapshot()?.tip);
                             self.network.connect(node_id, &body)?;
@@ -349,6 +391,26 @@ impl Runtime {
         };
         let stop = matches!(command, Command::Stop {});
         let recovery = matches!(command, Command::Recover {});
+        // An explicit session fixes both authority and local base. Other canonical writers or a
+        // new producer preparation must wait for cancellation/completion; reads remain available.
+        if self.catchup.active()
+            && matches!(
+                command,
+                Command::Apply { .. }
+                    | Command::ExtendApprovals { .. }
+                    | Command::Prepare {}
+                    | Command::Propose {}
+                    | Command::CommitPrepared { .. }
+            )
+        {
+            return (
+                failure(
+                    "catchup",
+                    "cancel active catch-up before changing authority or canonical work",
+                ),
+                false,
+            );
+        }
         if recovery {
             self.counters.recovery_dispatch_us = dispatch_us;
         }
@@ -385,6 +447,7 @@ impl Runtime {
             self.suspend();
         }
         let Some(event) = self.network.poll(available) else {
+            self.catchup.pump(&self.worker, &mut self.network);
             return;
         };
         let result = codec::decode(event.header.kind, &event.body);
@@ -401,7 +464,22 @@ impl Runtime {
                 }
             }
             Ok(Message::Committed { revision, envelope }) => {
-                let decision = receive(&mut self.worker, revision, envelope);
+                let decision = if self.catchup.active() {
+                    // Unsolicited live delivery cannot move the base of an independently pinned
+                    // retrieval session, even when the same step is otherwise authorized.
+                    Decision {
+                        reply: codec::error(
+                            Reject::Busy,
+                            revision,
+                            hash_with_domain(ENVELOPE_ID_DOMAIN, envelope),
+                        ),
+                        kind: Kind::Error,
+                        new_commit: None,
+                        duplicate: false,
+                    }
+                } else {
+                    receive(&mut self.worker, revision, envelope)
+                };
                 if !self.worker.available() {
                     self.suspend();
                 } else {
@@ -467,14 +545,98 @@ impl Runtime {
                     self.network.reject(event.connection);
                 }
             }
+            Ok(Message::GetSuccessor(request)) => {
+                let (kind, body) = match catchup::serve(&self.worker, request) {
+                    Ok(envelope) => (
+                        Kind::Successor,
+                        codec::successor(request.request_id, request.base.revision + 1, &envelope),
+                    ),
+                    Err(code) => (
+                        Kind::RetrievalError,
+                        codec::retrieval_error(request.request_id, code, request.base.revision + 1),
+                    ),
+                };
+                if self
+                    .network
+                    .queue(event.connection, kind, &body, None)
+                    .is_err()
+                {
+                    self.network.close(event.connection);
+                }
+            }
+            Ok(Message::Successor {
+                request_id,
+                revision,
+                envelope,
+            }) => {
+                match self.catchup.accept(
+                    &mut self.worker,
+                    event.connection,
+                    request_id,
+                    revision,
+                    envelope,
+                ) {
+                    Ok((new, duplicate)) => {
+                        if new {
+                            self.counters.new_peer_commits += 1;
+                            self.observations.push(Observation {
+                                revision,
+                                received_to_commit_us: event.received.elapsed().as_micros(),
+                                bytes: envelope.len(),
+                            });
+                        }
+                        self.counters.duplicates += u64::from(duplicate);
+                        // Historical retrieval never mints first-publication or relay permission.
+                    }
+                    Err(reason) => {
+                        self.catchup.halt(reason);
+                        self.network.reject(event.connection);
+                        if !self.worker.available() {
+                            self.suspend();
+                        }
+                    }
+                }
+            }
+            Ok(Message::RetrievalError {
+                request_id,
+                code,
+                revision,
+            }) => {
+                self.counters.peer_errors += 1;
+                let _ = code;
+                if !self
+                    .catchup
+                    .response_error(event.connection, request_id, revision)
+                {
+                    self.catchup.halt("unsolicited retrieval error");
+                    self.network.reject(event.connection);
+                }
+            }
         }
         // The dispatched body stayed charged to the transport budget through all owner work.
         drop(event);
         self.network.finish_event();
+        self.catchup.pump(&self.worker, &mut self.network);
     }
 }
 
 fn setup(args: Vec<OsString>) -> Result<(File, Runtime), String> {
+    setup_with(args, |path, profile, initialize| {
+        if initialize {
+            AuthenticatedFixtureStore::create_authenticated_fixture(path, &profile.manifest)
+        } else {
+            AuthenticatedFixtureStore::reopen(path, &profile.manifest)
+        }
+        .map_err(|e| e.to_string())
+    })
+}
+
+// The injectable opener is private. Only the library's cfg(test) entrypoint below can substitute
+// the existing real-VFS wrapper; production flags/peer/operator commands cannot select faults.
+fn setup_with(
+    args: Vec<OsString>,
+    open: impl FnOnce(&Path, &Profile, bool) -> Result<AuthenticatedFixtureStore, String>,
+) -> Result<(File, Runtime), String> {
     let role = args.first().and_then(|s| s.to_str());
     let producer_role = role == Some("producer");
     if !matches!(role, Some("producer" | "follower"))
@@ -486,7 +648,6 @@ fn setup(args: Vec<OsString>) -> Result<(File, Runtime), String> {
     let profile = Profile::load(Path::new(&args[2]))?;
     let approvals = Approvals::load(Path::new(&args[3]), &profile)?;
     let config = Config::load(Path::new(&args[5]))?;
-    let context = codec::Context::new(config.node_id, &profile);
     let producer = if producer_role {
         Some(producer::load_signer(
             Path::new(&args[6]),
@@ -498,34 +659,55 @@ fn setup(args: Vec<OsString>) -> Result<(File, Runtime), String> {
     };
     let initialize = args[1] == "init";
     let (guard, path) = lock_directory(Path::new(&args[4]), initialize)?;
-    let store = if initialize {
-        AuthenticatedFixtureStore::create_authenticated_fixture(&path, &profile.manifest)
-    } else {
-        AuthenticatedFixtureStore::reopen(&path, &profile.manifest)
-    }
-    .map_err(|e| e.to_string())?;
+    let store = open(&path, &profile, initialize)?;
     let worker = Worker::new(store, profile, approvals, producer)?;
-    let network = Network::bind(config, context)?;
-    Ok((
-        guard,
-        Runtime {
-            worker,
-            network,
-            fresh: BTreeSet::new(),
-            counters: Counters::default(),
-            observations: Vec::with_capacity(super::profile::MAX_BLOCKS),
-        },
-    ))
+    Ok((guard, Runtime::new(worker, config)?))
 }
-/// Explicit S3 entrypoint only. S1/S2 keep their reviewed synchronous operator-only execution path.
+/// Explicit S3/S4 entrypoint. S1/S2 keep their reviewed synchronous operator-only execution path.
 pub fn run(args: Vec<OsString>) -> Result<(), String> {
-    let (_guard, mut runtime) = match setup(args) {
+    let (_guard, runtime) = match setup(args) {
         Ok(v) => v,
         Err(e) => {
             let _ = framing::write_frame(&mut std::io::stdout().lock(), &failure("terminal", &e));
             return Err(e);
         }
     };
+    drive(runtime)
+}
+
+/// Same owner command/peer dispatch with an existing test-only real-VFS store, never a second model.
+#[cfg(test)]
+pub(crate) struct TestRuntime(Runtime);
+#[cfg(test)]
+impl TestRuntime {
+    pub(crate) fn new(worker: Worker, config: &Path) -> Result<Self, String> {
+        Ok(Self(Runtime::new(worker, Config::load(config)?)?))
+    }
+    pub(crate) fn command(&mut self, value: Value) -> Value {
+        self.0
+            .operator(&serde_json::to_vec(&value).expect("test command"), 0)
+            .0
+    }
+    pub(crate) fn tick(&mut self) {
+        self.0.peer_tick();
+    }
+}
+
+/// Isolated libtest child uses the production setup/lock/stdio/owner loop. Its parent consumes the
+/// marker before framed output; no fault configuration or alternate opener exists in executables.
+#[cfg(test)]
+pub(crate) fn test_run(
+    args: Vec<OsString>,
+    open: impl FnOnce(&Path, &Profile, bool) -> Result<AuthenticatedFixtureStore, String>,
+) -> Result<(), String> {
+    use std::io::Write;
+    let (_guard, runtime) = setup_with(args, open)?;
+    println!("S4_OWNER_READY");
+    std::io::stdout().flush().map_err(|e| e.to_string())?;
+    drive(runtime)
+}
+
+fn drive(mut runtime: Runtime) -> Result<(), String> {
     let mut operator = Operator::start();
     operator.send(success(runtime.worker.status()?))?;
     loop {

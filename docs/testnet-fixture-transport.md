@@ -8,7 +8,10 @@ serialized `AuthenticatedFixtureStore` and an independent database/directory loc
 Implementation: `examples/testnet_support/transport/{codec,net,mod}.rs`. Existing S1/S2 commands,
 profiles, crypto, native execution, schemas, durability/audits and poison/exact-recovery behavior
 are reused. The S1/S2 executables do not enable sockets. No prototype handlers, peer-derived
-approvals, signing-key discovery, retrieval/catch-up, autonomous slots or PoAsh rules are added.
+approvals, signing-key discovery, retrieval/catch-up, autonomous slots or PoAsh rules were added by
+that stage. This document records S3's frozen version-1 contract and original measurements.
+[S4](testnet-fixture-catchup.md) subsequently adds explicit version-2 pinned retrieval while preserving
+all version-1 bytes and normal delivery semantics; it completes the finite M1 experiment.
 
 ## Executable, Configuration and Operator API
 
@@ -154,7 +157,7 @@ envelope rejections; received recognized errors remain non-authoritative failed-
 Reference/error responses carry no text or approval. They release only matching outstanding
 revision/H/submitted-ID flow credit after the data frame has been written. References do not execute,
 install authority, publish or relay anything; a peer-reported result is not a local commitment proof.
-Malformed/unmatched responses close the connection. There are no retrieval/request/vote types.
+Malformed/unmatched responses close the connection. Version 1 has no retrieval/request/vote types.
 
 All six complete golden frames (Status, empty signed E, new/duplicate References and two Errors) are
 frozen in [`../tests/fixtures/testnet_fixture_transport.json`](../tests/fixtures/testnet_fixture_transport.json).
@@ -320,7 +323,7 @@ the user's package-version edits remain preserved.
 
 SIGKILL/SQL interference/socket timeouts are not power loss or physical durability certification.
 Existing schemas/signing formats/rules, default synchronization/audits and legacy HIST/BLOCK
-rejection remain unchanged. S3 stops here: **no missing-suffix retrieval, automatic catch-up,
+rejection remain unchanged. At its review boundary S3 stopped here: **no missing-suffix retrieval, automatic catch-up,
 autonomous scheduling, PoAsh eligibility/protocol blocks/finality or prototype activation**. Original
 committed E remains available for explicit operator retransmission; status hints cannot fill gaps.
 Local plans/handoffs remain excluded. The initial S3 implementation delivery was unstaged for review.

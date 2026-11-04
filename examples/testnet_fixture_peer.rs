@@ -1,4 +1,4 @@
-//! S3 loopback-only fixture peer process; all authority still arrives over trusted local operator I/O.
+//! S3/S4 loopback fixture peer; selections and catch-up targets arrive only over local operator I/O.
 #[allow(clippy::duplicate_mod)]
 // Share the reviewed owner/pool/controller boundary, not a new ledger.
 mod testnet_support;

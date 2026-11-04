@@ -3,18 +3,18 @@ use super::*;
 use crate::native_transaction as native;
 #[allow(dead_code, clippy::duplicate_mod)] // The actual example, not a rewritten orchestration model.
 #[path = "../../../examples/testnet_support/mod.rs"]
-mod worker;
+pub(super) mod worker;
 use serde_json::json;
 use worker::producer::Producer;
 use worker::profile::{Approvals, Profile};
 
-fn profile() -> Profile {
+pub(super) fn profile() -> Profile {
     Profile::from_bytes(include_bytes!(
         "../../../tests/fixtures/testnet_fixture_profile.json"
     ))
     .unwrap()
 }
-fn build(store: AuthenticatedFixtureStore) -> worker::Worker {
+pub(super) fn build(store: AuthenticatedFixtureStore) -> worker::Worker {
     let p = profile();
     let approvals = Approvals::load(
         Path::new("tests/fixtures/testnet_fixture_approvals_empty.json"),
@@ -24,7 +24,7 @@ fn build(store: AuthenticatedFixtureStore) -> worker::Worker {
     let producer = Producer::new(key(2), &p).unwrap();
     worker::Worker::new(store, p, approvals, Some(producer)).unwrap()
 }
-fn inputs(count: usize) -> Vec<Value> {
+pub(super) fn inputs(count: usize) -> Vec<Value> {
     let p = profile();
     (0..count).map(|nonce| {
         let signed=native::sign(native::UnsignedTransaction {encoding_version:2,native_rules_version:1,
@@ -34,15 +34,15 @@ fn inputs(count: usize) -> Vec<Value> {
         json!({"command":"submit_native","transaction":hex::encode(signed.canonical_bytes().unwrap())})
     }).collect()
 }
-fn reset_all() {
+pub(super) fn reset_all() {
     reset();
     native::phase_evidence::reset();
 }
-fn evidence() -> (usize, usize, usize, (usize, usize)) {
+pub(super) fn evidence() -> (usize, usize, usize, (usize, usize)) {
     let (p, s, n) = counters();
     (native::phase_evidence::count(), p, s, n)
 }
-fn approve(w: &mut worker::Worker, d: &TempDir, proposal: &Value) {
+pub(super) fn approve(w: &mut worker::Worker, d: &TempDir, proposal: &Value) {
     let p = profile();
     let document = json!({"format":"eternix-fixture-approvals-v1","network_id":hex::encode(p.network),
         "anchor_hash":hex::encode(p.anchor_tip().hash),"producer_id":"P","ticket_id":1,
@@ -54,7 +54,7 @@ fn approve(w: &mut worker::Worker, d: &TempDir, proposal: &Value) {
         true
     );
 }
-fn prepare_proposal(w: &mut worker::Worker) -> Value {
+pub(super) fn prepare_proposal(w: &mut worker::Worker) -> Value {
     assert_eq!(w.test_command(json!({"command":"prepare"}))["ok"], true);
     let proposal = w.test_command(json!({"command":"propose"}));
     assert_eq!(proposal["ok"], true);

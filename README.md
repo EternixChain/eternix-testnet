@@ -320,6 +320,7 @@ The fresh offline schema-3 archive, compact durable producer evidence, signed-on
 The bounded S1 local fixture worker, independent public profile/selection inputs, lifetime lock, and separate-process verification are documented in [`docs/testnet-fixture-worker.md`](docs/testnet-fixture-worker.md).
 The S2 bounded native pool, producer preparation/signing, durable local controller selections, and original-request recovery workflow are documented in [`docs/testnet-fixture-producer.md`](docs/testnet-fixture-producer.md).
 The S3 loopback fixture transport, exact peer codec, commit-only relay, resource bounds, three-process tests, and measurements are documented in [`docs/testnet-fixture-transport.md`](docs/testnet-fixture-transport.md).
+The S4 pinned missing-suffix retrieval, keyless reuse of authorized history, actual-path recovery/fault tests, and finite M1 completion are documented in [`docs/testnet-fixture-catchup.md`](docs/testnet-fixture-catchup.md).
 
 Protocol specifications and docs will be published at:
 
