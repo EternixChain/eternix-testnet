@@ -2,6 +2,7 @@
 //!
 //! Exporting native authentication and offline application does not activate V2 in RPC, P2P,
 //! or the live node's canonical execution.
+//! The separately named C1 PoAsh module validates immutable inputs and plans eligibility only.
 
 // The library's test build imports the actual example worker to measure its inclusion/admission
 // calls against existing private phase counters. This adds no production API or execution path.
@@ -14,5 +15,6 @@ pub mod block_commitment;
 pub mod canonical_fixture;
 pub mod durable_fixture;
 pub mod native_block;
+pub mod native_poash;
 pub mod native_transaction;
 pub mod native_transfer;
