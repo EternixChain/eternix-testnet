@@ -390,7 +390,7 @@ pub fn authenticate_block(
     })
 }
 
-/// Signs only finalized immutable content under the block domain. No signing-intent journal exists.
+/// Stateless fixture-only signing of finalized content; C1's protected authority is a separate API.
 pub fn sign_block(
     block: &NativeBlock,
     key: &SigningKey,
@@ -410,17 +410,22 @@ pub fn sign_block(
         return Err(Error::KeyMismatch);
     }
     let digest = envelope.signing_digest();
+    envelope.signature = sign_digest(key, &digest)?;
+    Ok(envelope)
+}
+// Shared vetted prehash signing primitive only. Callers establish their own distinct profile and
+// authorization/order; this helper neither grants C1 permission nor exposes a public raw signer.
+pub(crate) fn sign_digest(key: &SigningKey, digest: &Hash) -> Result<[u8; SIGNATURE_LEN], Error> {
     let signature = sign_with_retry(|retry| {
         if !retry {
-            key.sign_prehash_recoverable(&digest)
+            key.sign_prehash_recoverable(digest)
                 .map_err(|_| Error::SigningFailed)
         } else {
             // Only vetted backend secret arithmetic; a fresh entropy-backed nonce replaces overflow.
-            fresh_candidate(key, &digest, OsRng)
+            fresh_candidate(key, digest, OsRng)
         }
     })?;
-    envelope.signature = *signature.as_bytes();
-    Ok(envelope)
+    Ok(*signature.as_bytes())
 }
 fn fresh_candidate(
     key: &SigningKey,

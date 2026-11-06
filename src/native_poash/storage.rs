@@ -242,6 +242,46 @@ impl PoashTrialStore {
         self.work_ready()?;
         Ok(self.snapshot.prefix(&self.genesis)?.slot_start()?)
     }
+    // Signing consumes ONLY an actual owner preparation. Check its exact generation/RAM and
+    // persisted dataset before reservation, without staging native entries or authenticating twice.
+    pub(super) fn signing_view(&self, prepared: &PreparedBlock) -> Result<SlotStartView, Error> {
+        self.check_base(&prepared.base)?;
+        self.conn().execute_batch("BEGIN").map_err(sql::error)?;
+        let checked = sql::verify(self.conn(), &self.genesis, &self.snapshot);
+        let end = self.conn().execute_batch("ROLLBACK").map_err(sql::error);
+        checked.and(end)?;
+        self.slot_start()
+    }
+    // Historical signer reconciliation derives Start(s) from this owner's already-audited original
+    // records. There is no public peer snapshot/checkpoint or AdmissionPlan import route.
+    pub(super) fn signing_history(&self, slot: u64) -> Result<(SlotStartView, Hash), Error> {
+        self.work_ready()?;
+        if !(1..=MAX_SLOTS).contains(&slot) || slot > self.snapshot.tip().slot + 1 {
+            return Err(super::Error::MissingHistory(slot.saturating_sub(1)).into());
+        }
+        let mut prior = Snapshot::initial(&self.genesis);
+        let mut bytes = Vec::from(self.genesis.network_id());
+        bytes.extend_from_slice(&((slot - 1) as u16).to_be_bytes());
+        for r in self.snapshot.records.iter().take((slot - 1) as usize) {
+            bytes.extend_from_slice(&r.proof.envelope().id());
+            prior.insert(r.clone())?;
+        }
+        Ok((
+            prior.prefix(&self.genesis)?.slot_start()?,
+            crate::block_commitment::hash_with_domain(b"ETERNIX_C1_SIGN_BASE_EVIDENCE\0", &bytes),
+        ))
+    }
+    pub(super) fn signing_generation(&self) -> u64 {
+        self.generation
+    }
+    #[cfg(test)]
+    pub(super) fn signing_test_hook(&mut self, hook: Option<Hook>) {
+        self.hook = hook;
+    }
+    #[cfg(test)]
+    pub(super) fn signing_test_create(path: &Path, g: &Genesis, vfs: &str) -> Result<Self, Error> {
+        Self::create_inner(path, g, Some(vfs), |_| Ok(()))
+    }
     /// Queried required SQLite policy on the actual Ready connection.
     pub fn settings(&self) -> Result<StorageSettings, Error> {
         self.ready()?;

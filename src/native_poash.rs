@@ -8,9 +8,12 @@ mod admission;
 pub mod application;
 mod genesis;
 mod history;
+pub mod peer;
 mod selection;
+pub mod signing;
 mod state;
 pub mod storage;
+pub mod trial;
 
 pub use admission::{AdmissionPlan, AuthenticatedHeader, HeaderClaim};
 pub use genesis::{

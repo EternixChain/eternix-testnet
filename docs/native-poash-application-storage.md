@@ -45,6 +45,10 @@ intent log or durable signer protection. Tests sign only published small-integer
 the owner. **P2.3's fenced durable signing lifecycle is still required before the producer-process
 trial.** There are no C1 sockets, queues, scheduling, wall-clock acceptance or prototype integration.
 
+P2.3 now supplies the separate protected signer and isolated process experiment described in
+[`native-poash-signing-trial.md`](native-poash-signing-trial.md). The P2.2 codecs, schema and application
+semantics below retain their meanings; signer protection remains outside canonical genesis/state.
+
 ## Exact New Codecs and Authentication
 
 All integers are unsigned, explicit big-endian, without alignment or serialization defaults. Both
