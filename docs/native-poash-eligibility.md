@@ -13,6 +13,11 @@ eligibility plan bound to the complete supplied view. The code imports no protot
 year/epoch transition, signing API/journal, socket, timer, receipt or live-node activation in P2.1.
 Existing native/authentication/M1 APIs, schemas, domains and golden bytes retain their meanings.
 
+P2.2 subsequently adds the separate `native_poash::{application,storage}` APIs described in
+[`native-poash-application-storage.md`](native-poash-application-storage.md). The P2.1 interfaces and
+goldens below remain frozen: a caller-supplied snapshot or `AdmissionPlan` still cannot authorize
+canonical writes. Only the new owner derives application authority from its own audited prefix.
+
 ## Actual APIs and Trust Boundary
 
 | API | Contract |

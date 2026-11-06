@@ -100,7 +100,7 @@ impl Ticket {
         }
     }
 }
-/// One retained earning event; maturity execution is deliberately outside P2.1.
+/// One retained earning event; C1 records its hold without executing deferred maturity/unlocks.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RewardCredit {
     /// Earning slot identifies one event, not a delivery receipt.

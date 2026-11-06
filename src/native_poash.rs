@@ -1,13 +1,16 @@
-//! Pure, bounded C1 genesis, closed snapshots and historical eligibility planning (P2.1).
+//! Bounded C1 genesis, historical planning and separately owned offline application/storage.
 //!
 //! Historical state is independent caller authority, never learned from a candidate. Validation
 //! here establishes canonical input/linkage/invariants, NOT execution provenance, finality or a
-//! commit permission. There is no application engine, mutable owner or fixture-grant conversion.
+//! commit permission. Only `storage` derives canonical authority from its independently seeded,
+//! audited prefix; no supplied snapshot/plan or fixture-grant conversion authorizes that owner.
 mod admission;
+pub mod application;
 mod genesis;
 mod history;
 mod selection;
 mod state;
+pub mod storage;
 
 pub use admission::{AdmissionPlan, AuthenticatedHeader, HeaderClaim};
 pub use genesis::{
@@ -25,9 +28,9 @@ use std::fmt;
 
 /// Separate experimental C1 interpretation; does not broaden fixture header profile 2.
 pub const HEADER_PROFILE: u32 = 3;
-/// Future C1 outer descriptor in the signed header statement; no outer block codec is added here.
+/// C1 outer descriptor in the signed statement and explicit `application::Envelope` codec.
 pub const OUTER_WIRE: u8 = 4;
-/// Future C1 inner descriptor, independent of header/schema version numbers.
+/// C1 inner descriptor, independent of header/schema version numbers.
 pub const INNER_WIRE: u8 = 4;
 /// Existing compact signature encoding is retained under distinct authentication rules.
 pub const AUTH_ENCODING: u8 = 1;

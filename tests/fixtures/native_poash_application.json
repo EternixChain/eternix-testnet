@@ -1,0 +1,190 @@
+{
+  "test_only": true,
+  "format": "eternix-native-poash-application-v1",
+  "network_id": "2a673342d02b9917ad907154503759ed24dc4e33334f3936c620740faeabbe65",
+  "retained_year_zero_reward": 10000000,
+  "vectors": [
+    {
+      "slot": 1, "producer": "trial-A", "ticket": 1,
+      "reference": "2a673342d02b9917ad907154503759ed24dc4e33334f3936c620740faeabbe65",
+      "hash": "6453370f88b450ba5280e142fb52035486505e54443b5dd9249c5fdee1eac7ad",
+      "inner_bytes": 295, "inner_keccak": "d14fde9782bbad1240f02bb04d0254131432fbe6eee5e0518125902775d3f976",
+      "signing_digest": "877b7228ee0d56c6860b3e3e07e93b6ce07f50af6a04389529771c88af3f9acf",
+      "signature": "86f4c8b08e1c986b5c021fbf5df0a2640dab4af74ba77f3617ab41340044df0d333f6011730b04dbc826377bdcbe7668f0be9c0f1cd899a3e48b5f018c995a7500",
+      "envelope_id": "70c98b110c294c64ca91edab1ce5839f4eb012d01a782ae70a3a43347732444e",
+      "state_bytes": 659, "state_id": "5c4c5d1474b19954b60b5b19aa28bbdc3cc27543824fc3acaef516f201d843d6",
+      "gas": 0, "fees": 0, "issuance": 10000000, "supply": 1752000010000000,
+      "counts": {"trial-A": 1, "trial-B": 0},
+      "accounts": [
+        {"address": "1eff47bc3a10a45d4b230b5d10e37751fe6aa718", "balance": 0, "nonce": 0},
+        {"address": "6813eb9362372eef6200f3b1dbc3f819671cba69", "balance": 32000000000000, "nonce": 0},
+        {"address": "7e5f4552091a69125d5dfcb7b8c2659029395bdf", "balance": 1600000000000000, "nonce": 0}
+      ],
+      "transaction_ids": [],
+      "empty_inner": "046453370f88b450ba5280e142fb52035486505e54443b5dd9249c5fdee1eac7ad00000003000000000000048a000000000000000100859cf8f303560dc5d9a39182fb79dd5e2105a677662ac7da33aefceb9a54bfd8e262c2a77f7d0091f0845bf9ad5a41ee90930055a3ab5620929c441d220d1e040000000000000001184b8280ae263c33e0f0c662a002c933ccc51e032b947f9e9280a75c21a13a210000000000000000000000000000000000000000000000000000000000000000a9aba5369d9222f6156f71278ba3c938810cc6702efc58814f9facfa3057d94b0000000000000000fe8495c7c5d6685210555620258948bf42396056bfccc014fa37e983e712419000000007747269616c2d410000000a010000000000000000000000000000000000"
+    },
+    {
+      "slot": 2, "producer": "trial-B", "ticket": 255,
+      "reference": "2a673342d02b9917ad907154503759ed24dc4e33334f3936c620740faeabbe65",
+      "hash": "0115534df1baa43e7b49a8477e2a8d775ce88455e0bdbc367ca96f5531ceb0d3",
+      "inner_bytes": 1107, "inner_keccak": "3728284df0cbc86ffcd8ca73c6a282bbeeacba4ef2313ee418bcd9336adbdf81",
+      "signing_digest": "2109a19be1b690e016d8c0b03c86645f5cd9c684fe007b6e5421bb76b9288250",
+      "signature": "067439dd1eea6b0c306640e9ef740485017982b53d55e300415871d81db61c357f8043d9abbca0196527453fec1abd905ad83981fa3e140887cba5ec57aabbf900",
+      "envelope_id": "bb7c7257837fd19b179bd65b259f3f59307c98f6a8f934f1dc5268b780dceeb5",
+      "state_bytes": 708, "state_id": "51102f4b85ac6b5b56e773778f456275accbb5dac269260f6a629c0248c73388",
+      "gas": 4000, "fees": 40000, "issuance": 20000000, "supply": 1752000019960000,
+      "counts": {"trial-A": 1, "trial-B": 1},
+      "accounts": [
+        {"address": "1eff47bc3a10a45d4b230b5d10e37751fe6aa718", "balance": 20000, "nonce": 0},
+        {"address": "6813eb9362372eef6200f3b1dbc3f819671cba69", "balance": 32000000970000, "nonce": 1},
+        {"address": "7e5f4552091a69125d5dfcb7b8c2659029395bdf", "balance": 1599999998970000, "nonce": 3}
+      ],
+      "transaction_ids": ["543c07d138327f4f7ee6233a65f093c1d559d382482c3770cf3569e158c0d079", "c72401aad31ad68dae006037b2d3d1b56f12009d20ada6f7196d54f617685bd1", "9491b285c4f31c5c1a34ad8c400806efe5445a3f93c9df3def04fe269b455022", "2635c10b9546d30d39eab925c297a98771f1c6a36cf4a640e1e65809759c06f8"],
+      "empty_inner": null
+    },
+    {
+      "slot": 3, "producer": "trial-A", "ticket": 1,
+      "reference": "2a673342d02b9917ad907154503759ed24dc4e33334f3936c620740faeabbe65",
+      "hash": "4fe0293f777b4f93f56f25cfafef6d0fdaf21d763eda5c0ff08f8ba94436de00",
+      "inner_bytes": 498, "inner_keccak": "4d84b1b6fe1251fdaae2068205581d383b895a371d770d5dc32134da2a5e7399",
+      "signing_digest": "ed65983a1832c3644f40dada9d682cb493ba4af261f7a8a99ef0bb0da249f105",
+      "signature": "3864697fce43857cc99464a51b5c915fd6fb1cc89b9fa6bf14fef0f91e9045763bd327384b5648ffca30357f173fcbfd51a05f13f63f3b3de85033eb66714a0001",
+      "envelope_id": "10d1f3fe3bcfeee1db707ffe4853594c45dd72d42ed784441fbdb9134591e7f5",
+      "state_bytes": 757, "state_id": "bf985c43afed4e78f305e5e0fa2ff539121df010d9379d19af01065bc2350bb2",
+      "gas": 5000, "fees": 50000, "issuance": 30000000, "supply": 1752000029950000,
+      "counts": {"trial-A": 2, "trial-B": 1},
+      "accounts": [
+        {"address": "1eff47bc3a10a45d4b230b5d10e37751fe6aa718", "balance": 20000, "nonce": 0},
+        {"address": "6813eb9362372eef6200f3b1dbc3f819671cba69", "balance": 32000000960000, "nonce": 2},
+        {"address": "7e5f4552091a69125d5dfcb7b8c2659029395bdf", "balance": 1599999998970000, "nonce": 3}
+      ],
+      "transaction_ids": ["ecb6716d803f1434c43d72f198c8af6735cd2885577f9694cbf57147a8e5d1c5"], "empty_inner": null
+    },
+    {
+      "slot": 4, "producer": "trial-B", "ticket": 255,
+      "reference": "2a673342d02b9917ad907154503759ed24dc4e33334f3936c620740faeabbe65",
+      "hash": "6b127a740f3e66f7008009101d7e5f04b46d68035c3ee59b9f79ce78693bf71c",
+      "inner_bytes": 498, "inner_keccak": "cd565400b2dc4866920f4ff3b313b4ddd89fcb6efd321487fb946fb12863199d",
+      "signing_digest": "406aed9288b1818545db8a8338dc78c41b9faeb5672a4d811e6db775db57bcb6",
+      "signature": "ec1eea0920ee6491757f66030f7700a84e15e3bc2fc201164013334c84d4d2d20d1c460d75ca21711bb42be5eed803a43f7c714619530b181648e12fb585fe4301",
+      "envelope_id": "80ec5aa7d94e08c373b52a52ca796a7f0ab4878020d5d43166c8486c577734aa",
+      "state_bytes": 806, "state_id": "0b15bf070960d80c966cc709e0deb6e15f4faa66488caf7a5dd3eb71674a1905",
+      "gas": 6000, "fees": 60000, "issuance": 40000000, "supply": 1752000039940000,
+      "counts": {"trial-A": 2, "trial-B": 2},
+      "accounts": [
+        {"address": "1eff47bc3a10a45d4b230b5d10e37751fe6aa718", "balance": 10000, "nonce": 1},
+        {"address": "6813eb9362372eef6200f3b1dbc3f819671cba69", "balance": 32000000960000, "nonce": 2},
+        {"address": "7e5f4552091a69125d5dfcb7b8c2659029395bdf", "balance": 1599999998970000, "nonce": 3}
+      ],
+      "transaction_ids": ["c53b275881f28a0786f96b49c841f7c77984853c8270504176c94db31fb69c51"], "empty_inner": null
+    },
+    {
+      "slot": 5, "producer": "trial-B", "ticket": 255,
+      "reference": "2a673342d02b9917ad907154503759ed24dc4e33334f3936c620740faeabbe65",
+      "hash": "83d495983782b092c4a15590aaac630ce269a97278628847fae54285240a4d3b",
+      "inner_bytes": 295, "inner_keccak": "1c2fd02861a10e54839b94e0aaa888533f0a25d5e1d42758edf1f54c892adc8f",
+      "signing_digest": "b0f4ad0ae0d789f766da43472f686f0bb9862f1ca60eed78129da2f7ab47bda1",
+      "signature": "5440be32f7f08ce70ee90778635ba3398307752233fb081e29b948e9a64bbfbe34aadd431cab4c9ccc885f7b343d780d4e9490ad6c802c7d898af2e60a8a33c101",
+      "envelope_id": "4aa4d50686591c226e6a8ef20a875095e88771760a8900f98366cc3a5cc1ae1e",
+      "state_bytes": 855, "state_id": "a2fbdad033a5dbc3dd624960409f3d86d06f4fc55d6d24b21f904e55b47e9057",
+      "gas": 6000, "fees": 60000, "issuance": 50000000, "supply": 1752000049940000,
+      "counts": {"trial-A": 2, "trial-B": 3},
+      "accounts": [
+        {"address": "1eff47bc3a10a45d4b230b5d10e37751fe6aa718", "balance": 10000, "nonce": 1},
+        {"address": "6813eb9362372eef6200f3b1dbc3f819671cba69", "balance": 32000000960000, "nonce": 2},
+        {"address": "7e5f4552091a69125d5dfcb7b8c2659029395bdf", "balance": 1599999998970000, "nonce": 3}
+      ],
+      "transaction_ids": [], "empty_inner": null
+    },
+    {
+      "slot": 31, "producer": "trial-B", "ticket": 255,
+      "reference": "2a673342d02b9917ad907154503759ed24dc4e33334f3936c620740faeabbe65",
+      "hash": "98d1534c5b99da35093b633279c08fa4be0e1778e43013f78861e24f0a97b7b5",
+      "inner_bytes": 295, "inner_keccak": "937da5d6b3017a373713f6c7d52b059d48c1a15eebcd855fe10712709a7448de",
+      "signing_digest": "9b4beca5ee1041f57b2d3a19a7c8e12c821cc5ae0a86afdff7789bccb8b827e1",
+      "signature": "b946b678365fb40517998b085b88dadd2610971b5053a6ca9b8942319d342d817a8516a9654e30a800ea705d64d0527dd2f54b3d1ebfbeb87d955ef168a7f49c00",
+      "envelope_id": "73b224e555296be3721ffe18c40018f6e8ed374b80d50045825d4b5c3dee907b",
+      "state_bytes": 2129, "state_id": "8f2e5a3709adc0b08259f9c0bcfff258fecef68ba44274feb9bf81c9e139a275",
+      "gas": 6000, "fees": 60000, "issuance": 310000000, "supply": 1752000309940000,
+      "counts": {"trial-A": 15, "trial-B": 16},
+      "accounts": [
+        {"address": "1eff47bc3a10a45d4b230b5d10e37751fe6aa718", "balance": 10000, "nonce": 1},
+        {"address": "6813eb9362372eef6200f3b1dbc3f819671cba69", "balance": 32000000960000, "nonce": 2},
+        {"address": "7e5f4552091a69125d5dfcb7b8c2659029395bdf", "balance": 1599999998970000, "nonce": 3}
+      ],
+      "transaction_ids": [], "empty_inner": null
+    },
+    {
+      "slot": 32, "producer": "trial-A", "ticket": 1,
+      "reference": "859cf8f303560dc5d9a39182fb79dd5e2105a677662ac7da33aefceb9a54bfd8",
+      "hash": "1daf5bf30da4f2c273ecbde1b57704dcbae2f5a05608527de8bd48c1a78068b4",
+      "inner_bytes": 295, "inner_keccak": "8e1f51ac3c20cf730dac37612ffa0198f9b3defec7a5f99892f6fca41e80989f",
+      "signing_digest": "fb815450f382afea6f2e88ef3c69b3cfe379dd879c2cd46629dec384228471a4",
+      "signature": "83ff21cf1ff6fc552d110b51450bcc462af9aa371f3c4dd56fae710bc0565d6e48593acf76a521d5f9d3f5fd00c5c42f9cf08082f309c7f590d5842f0acd21a000",
+      "envelope_id": "834d6ada6330fda8be5200f4bf7b00d17e6a43fbd3b5fbb169e47cc1dd51f715",
+      "state_bytes": 2178, "state_id": "fe1928135d890874ae32b6beeeabc53c2da64f6179c8a898cc860f023aabc14e",
+      "gas": 6000, "fees": 60000, "issuance": 320000000, "supply": 1752000319940000,
+      "counts": {"trial-A": 16, "trial-B": 16},
+      "accounts": [
+        {"address": "1eff47bc3a10a45d4b230b5d10e37751fe6aa718", "balance": 10000, "nonce": 1},
+        {"address": "6813eb9362372eef6200f3b1dbc3f819671cba69", "balance": 32000000960000, "nonce": 2},
+        {"address": "7e5f4552091a69125d5dfcb7b8c2659029395bdf", "balance": 1599999998970000, "nonce": 3}
+      ],
+      "transaction_ids": [], "empty_inner": null
+    },
+    {
+      "slot": 33, "producer": "trial-A", "ticket": 1,
+      "reference": "6453370f88b450ba5280e142fb52035486505e54443b5dd9249c5fdee1eac7ad",
+      "hash": "feb15b4fed16417791645d9424ac6e9d7e768607cc6b4d31330cce0a68832c99",
+      "inner_bytes": 295, "inner_keccak": "0af1ede05b25f219da905800f2015cc5a1fcdd5b8ea104014b196aa7a618097f",
+      "signing_digest": "48c00beb0460251b9ad46472cfe0729fa8ba49f7e8cc1626f2eaca30befd2302",
+      "signature": "615aaf3cad861f458019ac372d6c0374d3c92d24d3bec653254be6ef25415ac850ad5a2e57f3cf19c2a9630e90f47060892ba7c2ac011065fa0d1e819ca8d63501",
+      "envelope_id": "26a460e008d36eddac0376959059ed857ffc520a0c10e28b3b269477cff5ca1d",
+      "state_bytes": 2227, "state_id": "a6469540b7cd2a4930da510ad34851bc01cc67dc22dc9f7aecf39386b6966400",
+      "gas": 6000, "fees": 60000, "issuance": 330000000, "supply": 1752000329940000,
+      "counts": {"trial-A": 17, "trial-B": 16},
+      "accounts": [
+        {"address": "1eff47bc3a10a45d4b230b5d10e37751fe6aa718", "balance": 10000, "nonce": 1},
+        {"address": "6813eb9362372eef6200f3b1dbc3f819671cba69", "balance": 32000000960000, "nonce": 2},
+        {"address": "7e5f4552091a69125d5dfcb7b8c2659029395bdf", "balance": 1599999998970000, "nonce": 3}
+      ],
+      "transaction_ids": [], "empty_inner": null
+    },
+    {
+      "slot": 64, "producer": "trial-A", "ticket": 1,
+      "reference": "1daf5bf30da4f2c273ecbde1b57704dcbae2f5a05608527de8bd48c1a78068b4",
+      "hash": "dbc5f617e9a977a1539704824f26b525d0997065f72151998d476b9a9d761a39",
+      "inner_bytes": 295, "inner_keccak": "fefac568f8233e814c13b3fce71572de815803a9c2b45ed472d37d66f610d028",
+      "signing_digest": "7a27cbbc6bfd8eb147f9a730a75603270d5899acc307982b4beeeb4101ce3c8c",
+      "signature": "d33779dde81b4feaaf674b1e1b3c90b9f9dc1de685a916715bfad0a11ec4887d3eb95284f4c9776a5b55b32a47bc21acffa85760123209c863bcb915fd8a9e7c00",
+      "envelope_id": "3b1dd1968401bfb6bbdd2b0f6a6dee0c4f26d3186abd46d791b97a255a5f10b3",
+      "state_bytes": 3746, "state_id": "01ea26a9fc9d0e4755194d00e6e1fbf0dbc59694965fc1e41252183214d10b5f",
+      "gas": 6000, "fees": 60000, "issuance": 640000000, "supply": 1752000639940000,
+      "counts": {"trial-A": 38, "trial-B": 26},
+      "accounts": [
+        {"address": "1eff47bc3a10a45d4b230b5d10e37751fe6aa718", "balance": 10000, "nonce": 1},
+        {"address": "6813eb9362372eef6200f3b1dbc3f819671cba69", "balance": 32000000960000, "nonce": 2},
+        {"address": "7e5f4552091a69125d5dfcb7b8c2659029395bdf", "balance": 1599999998970000, "nonce": 3}
+      ],
+      "transaction_ids": [], "empty_inner": null
+    },
+    {
+      "slot": 65, "producer": "trial-A", "ticket": 1,
+      "reference": "feb15b4fed16417791645d9424ac6e9d7e768607cc6b4d31330cce0a68832c99",
+      "hash": "c8b1c34728e4842820178be7c5ebff1ef753f1adb111d69f247b7bd380a3215b",
+      "inner_bytes": 295, "inner_keccak": "7c4898f51fd150cb275ad9e586ef394daea026d071823ddfe06840932cc8e915",
+      "signing_digest": "64f188a95b97481a93f7bb9fb761681ab3e89950018f0d00da47236ee5b4727e",
+      "signature": "492e1c0da6d5cf666a57adf83e7c5ae3d50602413a7a88f931be8bb304094c403149058c4f8203e19ffd648c9161b27f6edcc4bcd9ac806e8a6f574824675eaf01",
+      "envelope_id": "541ff381a04383121e3b5493999834f153ba8b32a28c0dfb606a83d203c4f74e",
+      "state_bytes": 3795, "state_id": "d109f60b889fef1b5eceabe71ed5f1d06008dd651678158587aa1f768e3b6b3a",
+      "gas": 6000, "fees": 60000, "issuance": 650000000, "supply": 1752000649940000,
+      "counts": {"trial-A": 39, "trial-B": 26},
+      "accounts": [
+        {"address": "1eff47bc3a10a45d4b230b5d10e37751fe6aa718", "balance": 10000, "nonce": 1},
+        {"address": "6813eb9362372eef6200f3b1dbc3f819671cba69", "balance": 32000000960000, "nonce": 2},
+        {"address": "7e5f4552091a69125d5dfcb7b8c2659029395bdf", "balance": 1599999998970000, "nonce": 3}
+      ],
+      "transaction_ids": [], "empty_inner": null
+    }
+  ]
+}

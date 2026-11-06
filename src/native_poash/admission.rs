@@ -1,4 +1,4 @@
-//! C1 header attribution and eligibility planning only. No full block codec/body validity or writer.
+//! C1 header attribution and eligibility planning only. Application/storage use separate owned types.
 use super::*;
 use crate::block_commitment::{
     BlockHeader, BlockKind, EMPTY_RECEIPTS_ROOT, EMPTY_TX_ROOT, ProtocolData, keccak256,
@@ -7,7 +7,7 @@ use crate::block_commitment::{
 use crate::native_transaction::{NativeSignature, SIGNATURE_LEN};
 
 /// Immutable C1 header claim plus its bounded body-count metadata. Actual body bytes, native
-/// signatures/outcomes and economic effects still require P2.2; this is not an executable block.
+/// signatures/outcomes and economic effects require the separate application API; this is not a block.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HeaderClaim {
     header: BlockHeader,

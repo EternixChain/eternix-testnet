@@ -41,7 +41,7 @@ pub struct GenesisInput {
     pub tickets: Vec<Ticket>,
 }
 
-/// Retained initial annual record only; no year transition or economic application is implemented.
+/// Retained initial annual record. C1 application uses this fixed amount; no year-boundary engine.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct YearZero {
     /// Independently approved post-initialization supply, not current snapshot supply.
